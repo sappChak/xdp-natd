@@ -1,18 +1,25 @@
 services:
   node-a:
-    image: nicolaka/netshoot
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: xdp-thesis-toolkit:latest
     container_name: xdp-node-a
+    # command: /bin/sh -c "ethtool -K eth0 rx off tx off tso off gso off gro off && sleep infinity"
     command: /bin/sh -c "ethtool -K eth0 tx off && sleep infinity"
     privileged: true
+    # cpuset: "2"
     networks:
       xdp-bridge:
         ipv4_address: 172.20.0.10
 
   node-b:
-    image: nicolaka/netshoot
+    image: xdp-thesis-toolkit:latest
     container_name: xdp-node-b
+    # command: /bin/sh -c "ethtool -K eth0 rx off tx off tso off gso off gro off && sleep infinity"
     command: /bin/sh -c "ethtool -K eth0 tx off && sleep infinity"
     privileged: true
+    # cpuset: "3"
     networks:
       xdp-bridge:
         ipv4_address: 172.20.0.20
