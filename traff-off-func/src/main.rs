@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::Context as _;
 use aya::{
-    maps::DevMapHash,
+    maps::{Array, DevMapHash},
     programs::{ProgramError, Xdp, XdpFlags},
 };
 use clap::Parser;
@@ -17,13 +17,18 @@ use docker_api::{
 };
 use futures::StreamExt;
 use log::{debug, warn};
-use nix::{net::if_::if_nameindex, sched::CloneFlags};
+use nix::{
+    net::if_::{if_nameindex, if_nametoindex},
+    sched::CloneFlags,
+};
 use tokio::signal;
 
 #[derive(Debug, Parser)]
 struct Opt {
     #[arg(short, long, default_value = "docker0")]
     network: String,
+    #[arg(short, long)]
+    pnic: Option<String>,
 }
 
 struct ContainerInfo {
@@ -111,6 +116,19 @@ async fn get_containers(network: &str) -> anyhow::Result<Vec<ContainerInfo>> {
     Ok(container_infos)
 }
 
+fn get_if_addr(ifname: String) -> Result<u32, ()> {
+    let ifaddrs = nix::ifaddrs::getifaddrs().unwrap();
+    for ifaddr in ifaddrs {
+        if ifaddr.interface_name == ifname
+            && let Some(addr) = ifaddr.address
+            && let Some(sockaddr_in) = addr.as_sockaddr_in()
+        {
+            return Ok(sockaddr_in.ip().into());
+        }
+    }
+    Err(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let opt = Opt::parse();
@@ -124,8 +142,8 @@ async fn main() -> anyhow::Result<()> {
         "/traff-off-func"
     )))?;
     match aya_log::EbpfLogger::init(&mut ebpf) {
-        Err(e) => {
-            warn!("failed to initialize eBPF logger: {e}");
+        Err(_e) => {
+            warn!("logging is not used in the ebpf program");
         }
         Ok(logger) => {
             let mut logger =
@@ -139,25 +157,24 @@ async fn main() -> anyhow::Result<()> {
             });
         }
     }
-    let Opt { network } = opt;
+    let Opt { network, pnic } = opt;
 
-    let program: &mut Xdp = ebpf.program_mut("xdp_redirect").unwrap().try_into()?;
+    let program: &mut Xdp = ebpf
+        .program_mut("xdp_redirect_containers")
+        .unwrap()
+        .try_into()?;
     program.load()?;
 
     let containers = get_containers(&network).await?;
 
-    let mut links = Vec::new();
     for container in &containers {
         debug!(
             "attaching xdp program to: {}, ifindex: {} of container {}",
             container.veth, container.ifindex, container.name
         );
-        let link = program.attach(&container.veth, XdpFlags::DRV_MODE)
+        program.attach(&container.veth, XdpFlags::SKB_MODE)
         .context("failed to attach the XDP program with default flags - try changing XdpFlags::default() to XdpFlags::SKB_MODE")?;
-        links.push(link);
     }
-
-    assert_eq!(links.len(), containers.len());
 
     let mut devmap = DevMapHash::try_from(ebpf.map_mut("REDIRECT_MAP").unwrap())?;
     for container in &containers {
@@ -166,6 +183,27 @@ async fn main() -> anyhow::Result<()> {
             container.ipv4, container.ifindex
         );
         let _ = devmap.insert(u32::from(container.ipv4), container.ifindex, None, 0);
+    }
+
+    if let Some(ref nic) = pnic {
+        let ifindex = if_nametoindex(nic.as_str())?;
+        debug!("ifindex of the pnic is: {}", ifindex);
+        let _ = devmap.insert(0, ifindex, None, 0);
+        let program: &mut Xdp = ebpf.program_mut("xdp_redirect_host").unwrap().try_into()?;
+        program.load()?;
+        program
+            .attach(nic, XdpFlags::SKB_MODE)
+            .context("failed to attach the XDP program to the provided NIC, does the NIC exist?")?;
+    }
+
+    if let Some(ref nic) = pnic {
+        let mut array = Array::try_from(ebpf.map_mut("PNIC_IP_ARRAY").unwrap())?;
+        let nic_addr = get_if_addr(nic.to_string()).unwrap();
+        debug!(
+            "address of the provided NIC is: {:?}",
+            Ipv4Addr::from(nic_addr)
+        );
+        let _ = array.set(0, nic_addr, 0);
     }
 
     // links live as long as ebpf program does
@@ -199,7 +237,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 use std::os::unix::io::AsFd;
                 nix::sched::setns(net_ns_file.as_fd(), CloneFlags::CLONE_NEWNET).unwrap();
-                program.attach("eth0", XdpFlags::DRV_MODE).unwrap();
+                program.attach("eth0", XdpFlags::SKB_MODE).unwrap();
             });
 
             handles.push(handle);
