@@ -1,12 +1,13 @@
 use std::{
-    fs::File,
+    fs::{File, OpenOptions},
+    io::{Read, Write},
     net::Ipv4Addr,
     sync::{Arc, Mutex},
 };
 
 use anyhow::Context as _;
 use aya::{
-    maps::{Array, DevMapHash},
+    maps::{DevMapHash, HashMap},
     programs::{ProgramError, Xdp, XdpFlags},
 };
 use clap::Parser;
@@ -22,6 +23,10 @@ use nix::{
     sched::CloneFlags,
 };
 use tokio::signal;
+use traff_off_func::PortAllocator;
+use traff_off_func_common::HostPair;
+
+const PORT_RANGE: &str = "10000-12000";
 
 #[derive(Debug, Parser)]
 struct Opt {
@@ -31,7 +36,7 @@ struct Opt {
     pnic: Option<String>,
 }
 
-struct ContainerInfo {
+struct ContainerMetadata {
     name: String,
     veth: String,
     ipv4: Ipv4Addr,
@@ -39,12 +44,10 @@ struct ContainerInfo {
     pid: Option<isize>,
 }
 
-async fn get_containers(network: &str) -> anyhow::Result<Vec<ContainerInfo>> {
-    let mut container_infos = vec![];
+async fn get_containers(network: &str) -> anyhow::Result<Vec<ContainerMetadata>> {
+    let mut container_metas = vec![];
     let docker: Docker = Docker::unix("/var/run/docker.sock");
     let network = docker.networks().get(network).inspect().await?;
-
-    debug!("{:?}", network);
 
     if let Some(containers) = network.containers {
         for (cid, container_info) in &containers {
@@ -88,7 +91,7 @@ async fn get_containers(network: &str) -> anyhow::Result<Vec<ContainerInfo>> {
                                         .unwrap()
                                         .parse()
                                         .unwrap();
-                                    container_infos.push(ContainerInfo {
+                                    container_metas.push(ContainerMetadata {
                                         name,
                                         veth,
                                         ipv4,
@@ -113,7 +116,7 @@ async fn get_containers(network: &str) -> anyhow::Result<Vec<ContainerInfo>> {
         }
     }
 
-    Ok(container_infos)
+    Ok(container_metas)
 }
 
 fn get_if_addr(ifname: String) -> Result<u32, ()> {
@@ -127,6 +130,30 @@ fn get_if_addr(ifname: String) -> Result<u32, ()> {
         }
     }
     Err(())
+}
+
+fn reserve_kernel_ports(range: &str) -> Option<(u16, u16)> {
+    let mut fs = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/proc/sys/net/ipv4/ip_local_reserved_ports")
+        .unwrap();
+
+    let mut buffer = String::new();
+    fs.read_to_string(&mut buffer).unwrap();
+    let mut buffer = buffer.trim().to_string();
+
+    if buffer.is_empty() {
+        buffer = range.to_string();
+    } else {
+        buffer.push(',');
+        buffer.push_str(range);
+    }
+    fs.write_all(buffer.as_bytes()).unwrap();
+    let parts = range.split_once("-").unwrap();
+    let num1 = parts.0.parse::<u16>().unwrap();
+    let num2 = parts.1.parse::<u16>().unwrap();
+    Some((num1, num2))
 }
 
 #[tokio::main]
@@ -197,13 +224,17 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if let Some(ref nic) = pnic {
-        let mut array = Array::try_from(ebpf.map_mut("PNIC_IP_ARRAY").unwrap())?;
         let nic_addr = get_if_addr(nic.to_string()).unwrap();
-        debug!(
-            "address of the provided NIC is: {:?}",
-            Ipv4Addr::from(nic_addr)
-        );
-        let _ = array.set(0, nic_addr, 0);
+        let mut port_map = HashMap::try_from(ebpf.map_mut("PORT_MAP").unwrap())?;
+        let (lower, upper) = reserve_kernel_ports(PORT_RANGE).unwrap();
+        let mut port_allocator = PortAllocator::new(lower..=upper);
+        for container in &containers {
+            let value = HostPair {
+                host_ip: nic_addr,
+                host_port: port_allocator.allocate_next().unwrap(),
+            };
+            let _ = port_map.insert(u32::from(container.ipv4), value, 0);
+        }
     }
 
     // links live as long as ebpf program does

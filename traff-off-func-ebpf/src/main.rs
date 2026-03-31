@@ -14,9 +14,9 @@
 use core::mem::offset_of;
 
 use aya_ebpf::{
-    bindings::{BPF_NOEXIST, xdp_action},
+    bindings::{BPF_ANY, BPF_NOEXIST, xdp_action},
     macros::{map, xdp},
-    maps::{Array, DevMapHash, LruHashMap},
+    maps::{DevMapHash, HashMap, LruHashMap},
     programs::XdpContext,
 };
 use aya_log_ebpf::debug;
@@ -25,6 +25,7 @@ use network_types::{
     ip::{IpProto, Ipv4Hdr},
     udp::UdpHdr,
 };
+use traff_off_func_common::HostPair;
 use traff_off_func_ebpf::{
     ConntrackKey, ConntrackValue, FibMacs, Flags,
     helpers::{apply_ip_dnat, apply_ip_snat, get_fib_macs, ptr_at, ptr_at_mut, rewrite_macs},
@@ -37,8 +38,8 @@ static REDIRECT_MAP: DevMapHash = DevMapHash::with_max_entries(256, 0);
 static UDP_CONNTRACK: LruHashMap<ConntrackKey, ConntrackValue> =
     LruHashMap::with_max_entries(256, 0);
 
-#[map(name = "PNIC_IP_ARRAY")]
-static PNIC_IP_ARRAY: Array<u32> = Array::with_max_entries(1, 0);
+#[map(name = "PORT_MAP")]
+static PORT_MAP: HashMap<u32, HostPair> = HashMap::with_max_entries(256, 0);
 
 #[xdp]
 pub fn xdp_pass(_ctx: XdpContext) -> u32 {
@@ -153,11 +154,6 @@ fn process_udp_nat(
     let key = ConntrackKey::new(src_ip, dst_ip, src_port, dst_port);
 
     if flag == Flags::Snat {
-        let (host_ip, host_port) = match PNIC_IP_ARRAY.get(0) {
-            Some(ip) => (*ip, 8088),
-            None => return Ok(None),
-        };
-
         let nat = match unsafe { UDP_CONNTRACK.get(&key) } {
             Some(&value) => value,
             None => {
@@ -165,6 +161,11 @@ fn process_udp_nat(
                 let tot_len_ptr: *const [u8; 2] =
                     ptr_at(ctx, EthHdr::LEN + offset_of!(Ipv4Hdr, tot_len))?;
                 let tot_len: u16 = u16::from_be_bytes(unsafe { *tot_len_ptr });
+
+                let (host_ip, host_port) = match unsafe { PORT_MAP.get(src_ip) } {
+                    Some(pair) => (pair.host_ip, pair.host_port),
+                    None => return Ok(None),
+                };
 
                 let Some(fib_macs) =
                     get_fib_macs(ctx, host_ip, dst_ip, proto, tot_len, ingress_ifindex)
@@ -181,8 +182,8 @@ fn process_udp_nat(
                     fib_dmac: unsafe { *eth_src_addr },
                 };
                 let dnat = ConntrackValue::new(src_ip, src_port, return_macs, src_ip);
-                let _ = UDP_CONNTRACK.insert(&dkey, dnat, BPF_NOEXIST.into());
-
+                // BPF_ANY because key is the same, but destination port is different
+                let _ = UDP_CONNTRACK.insert(&dkey, dnat, BPF_ANY.into());
                 snat
             }
         };
