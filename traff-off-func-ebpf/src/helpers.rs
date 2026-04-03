@@ -7,8 +7,9 @@ use aya_ebpf::{
 };
 use aya_log_ebpf::debug;
 use network_types::ip::IpProto;
+use traff_off_func_common::{FibMacs, NATData};
 
-use crate::{AF_INET, ConntrackValue, FibMacs};
+use crate::AF_INET;
 
 #[inline(always)]
 fn csum_add(csum: u32, addend: u32) -> u32 {
@@ -85,7 +86,7 @@ pub fn ptr_at_mut<T>(ctx: &XdpContext, offset: usize) -> Result<*mut T, ()> {
 
 #[inline(always)]
 pub unsafe fn apply_ip_dnat(
-    nat: &ConntrackValue,
+    nat: &NATData,
     ip_check: *mut u16,
     udp_check: *mut u16,
     dst_addr_ptr: *mut u32,
@@ -114,7 +115,7 @@ pub unsafe fn apply_ip_dnat(
 
 #[inline(always)]
 pub unsafe fn apply_ip_snat(
-    nat: &ConntrackValue,
+    nat: &NATData,
     ip_check: *mut u16,
     udp_check: *mut u16,
     src_addr_ptr: *mut u32,
