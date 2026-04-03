@@ -1,6 +1,4 @@
-use std::ops::RangeInclusive;
-use std::collections::VecDeque;
-
+use std::{collections::VecDeque, ops::RangeInclusive};
 
 pub struct PortAllocator {
     ports: VecDeque<u16>,
@@ -13,7 +11,10 @@ impl PortAllocator {
     }
 
     pub fn allocate_next(&mut self) -> Option<u16> {
-        println!("the length is: {}", self.ports.len());
         self.ports.pop_back()
+    }
+
+    pub fn deallocate(&mut self, port: u16) {
+        self.ports.push_back(port);
     }
 }

@@ -1,13 +1,13 @@
 use std::{
-    fs::{File, OpenOptions},
-    io::{Read, Write},
     net::Ipv4Addr,
+    os::unix::io::AsFd,
     sync::{Arc, Mutex},
 };
 
-use anyhow::Context as _;
+use anyhow::{Context as _, Result};
 use aya::{
-    maps::{DevMapHash, HashMap},
+    Ebpf,
+    maps::{Array, DevMapHash, HashMap},
     programs::{ProgramError, Xdp, XdpFlags},
 };
 use clap::Parser;
@@ -17,16 +17,18 @@ use docker_api::{
     opts::{ExecCreateOpts, ExecStartOpts},
 };
 use futures::StreamExt;
-use log::{debug, warn};
+use log::{debug, info, warn};
+use macaddr::MacAddr6;
 use nix::{
     net::if_::{if_nameindex, if_nametoindex},
     sched::CloneFlags,
 };
-use tokio::signal;
+use tokio::{signal, time};
 use traff_off_func::PortAllocator;
-use traff_off_func_common::HostPair;
+use traff_off_func_common::{ConnectionTuple, ContainerInfo, FlowState};
 
 const PORT_RANGE: &str = "10000-12000";
+const IPERF_SERVER_PORT: u16 = 5201;
 
 #[derive(Debug, Parser)]
 struct Opt {
@@ -34,6 +36,8 @@ struct Opt {
     network: String,
     #[arg(short, long)]
     pnic: Option<String>,
+    #[arg(short, long)]
+    mode: String,
 }
 
 struct ContainerMetadata {
@@ -42,209 +46,271 @@ struct ContainerMetadata {
     ipv4: Ipv4Addr,
     ifindex: u32,
     pid: Option<isize>,
+    mac_address: [u8; 6],
 }
 
-async fn get_containers(network: &str) -> anyhow::Result<Vec<ContainerMetadata>> {
+async fn get_containers(network: &str) -> Result<Vec<ContainerMetadata>> {
     let mut container_metas = vec![];
-    let docker: Docker = Docker::unix("/var/run/docker.sock");
-    let network = docker.networks().get(network).inspect().await?;
+    let docker = Docker::unix("/var/run/docker.sock");
+    let network_info = docker.networks().get(network).inspect().await?;
 
-    if let Some(containers) = network.containers {
-        for (cid, container_info) in &containers {
-            let exec_opts = ExecCreateOpts::builder()
-                .command(vec!["cat", "/sys/class/net/eth0/iflink"])
-                .attach_stdout(true)
-                .attach_stderr(true)
-                .build();
+    let Some(containers) = network_info.containers else {
+        return Ok(container_metas);
+    };
 
-            let container = docker.containers().get(cid);
-            let inspect = container.inspect().await?;
-            let pid = inspect.state.unwrap().pid;
+    let exec_opts = ExecCreateOpts::builder()
+        .command(vec!["cat", "/sys/class/net/eth0/iflink"])
+        .attach_stdout(true)
+        .attach_stderr(true)
+        .build();
 
-            debug!("{:?}", container);
+    for (cid, container_info) in &containers {
+        let container = docker.containers().get(cid);
+        let inspect = container.inspect().await?;
+        let pid = inspect.state.and_then(|s| s.pid);
 
-            let mut exec_stream = container
-                .exec(&exec_opts, &ExecStartOpts::default())
-                .await?;
+        debug!("{:?}", container);
 
-            while let Some(result) = exec_stream.next().await {
-                match result {
-                    Ok(chunks) => match chunks {
-                        TtyChunk::StdOut(items) => {
-                            let output = String::from_utf8_lossy(&items);
-                            let iflink: u32 = output.trim().parse::<u32>().unwrap();
+        let mut exec_stream = container
+            .exec(&exec_opts, &ExecStartOpts::default())
+            .await?;
 
-                            let interfaces = if_nameindex()?;
-
-                            for interface in &interfaces {
-                                if interface.index() == iflink {
-                                    debug!("interface name: {:?}", interface.name());
-                                    let name = container_info.name.clone().unwrap();
-                                    let veth = interface.name().to_string_lossy().to_string();
-                                    debug!("ip: {:?}", container_info.i_pv_4_address);
-                                    let ipv4 = container_info
-                                        .i_pv_4_address
-                                        .as_ref()
-                                        .unwrap()
-                                        .split('/')
-                                        .next()
-                                        .unwrap()
-                                        .parse()
-                                        .unwrap();
-                                    container_metas.push(ContainerMetadata {
-                                        name,
-                                        veth,
-                                        ipv4,
-                                        ifindex: iflink,
-                                        pid,
-                                    });
-                                    break;
-                                }
-                            }
-                        }
-                        TtyChunk::StdErr(items) => {
-                            let error = String::from_utf8_lossy(&items);
-                            debug!("Error inside container: {error}")
-                        }
-                        TtyChunk::StdIn(_) => {}
-                    },
-                    Err(e) => {
-                        return Err(e.into());
-                    }
+        while let Some(result) = exec_stream.next().await {
+            let chunks = match result? {
+                TtyChunk::StdOut(items) => items,
+                TtyChunk::StdErr(items) => {
+                    debug!(
+                        "Error inside container: {}",
+                        String::from_utf8_lossy(&items)
+                    );
+                    continue;
                 }
-            }
+                TtyChunk::StdIn(_) => continue,
+            };
+
+            let output = String::from_utf8_lossy(&chunks);
+            let iflink: u32 = output.trim().parse().context("Failed to parse iflink")?;
+
+            let interfaces = if_nameindex()?;
+            let interface = interfaces
+                .into_iter()
+                .find(|i| i.index() == iflink)
+                .context("Matching interface not found on host")?;
+
+            let name = container_info.name.clone().unwrap_or_default();
+            let veth = interface.name().to_string_lossy().to_string();
+            let mac_address: [u8; 6] = container_info
+                .mac_address
+                .as_deref()
+                .unwrap_or_default()
+                .parse::<MacAddr6>()?
+                .into_array();
+
+            let ipv4: Ipv4Addr = container_info
+                .i_pv_4_address
+                .as_deref()
+                .and_then(|ip| ip.split('/').next())
+                .context("Missing or invalid IPv4 address")?
+                .parse()?;
+
+            debug!("interface name: {veth}, ip: {ipv4}");
+
+            container_metas.push(ContainerMetadata {
+                name,
+                veth,
+                ipv4,
+                mac_address,
+                ifindex: iflink,
+                pid,
+            });
+
+            break; // move to the next container
         }
     }
 
     Ok(container_metas)
 }
 
-fn get_if_addr(ifname: String) -> Result<u32, ()> {
-    let ifaddrs = nix::ifaddrs::getifaddrs().unwrap();
-    for ifaddr in ifaddrs {
-        if ifaddr.interface_name == ifname
-            && let Some(addr) = ifaddr.address
-            && let Some(sockaddr_in) = addr.as_sockaddr_in()
-        {
-            return Ok(sockaddr_in.ip().into());
-        }
-    }
-    Err(())
+fn get_if_addr(ifname: &str) -> Result<u32> {
+    nix::ifaddrs::getifaddrs()?
+        .find_map(|ifaddr| {
+            if ifaddr.interface_name == ifname {
+                ifaddr
+                    .address
+                    .as_ref()
+                    .and_then(|addr| addr.as_sockaddr_in())
+                    .map(|sock_addr| sock_addr.ip().into())
+            } else {
+                None
+            }
+        })
+        .context(format!(
+            "Failed to find IPv4 address for interface {ifname}"
+        ))
 }
 
-fn reserve_kernel_ports(range: &str) -> Option<(u16, u16)> {
-    let mut fs = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/proc/sys/net/ipv4/ip_local_reserved_ports")
-        .unwrap();
+fn reserve_kernel_ports(range: &str) -> Result<(u16, u16)> {
+    let path = "/proc/sys/net/ipv4/ip_local_reserved_ports";
+    let existing = std::fs::read_to_string(path)?;
+    let existing_trimmed = existing.trim();
 
-    let mut buffer = String::new();
-    fs.read_to_string(&mut buffer).unwrap();
-    let mut buffer = buffer.trim().to_string();
-
-    if buffer.is_empty() {
-        buffer = range.to_string();
+    let new_content = if existing_trimmed.is_empty() {
+        range.to_string()
     } else {
-        buffer.push(',');
-        buffer.push_str(range);
-    }
-    fs.write_all(buffer.as_bytes()).unwrap();
-    let parts = range.split_once("-").unwrap();
-    let num1 = parts.0.parse::<u16>().unwrap();
-    let num2 = parts.1.parse::<u16>().unwrap();
-    Some((num1, num2))
+        format!("{existing_trimmed},{range}")
+    };
+
+    std::fs::write(path, new_content)?;
+
+    let (num1, num2) = range.split_once('-').context("Invalid port range format")?;
+    Ok((num1.parse()?, num2.parse()?))
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let opt = Opt::parse();
+fn get_nsecs() -> u64 {
+    let ts = nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC)
+        .expect("failed to get monotonic time");
+    (ts.tv_sec() as u64) * 1_000_000_000 + (ts.tv_nsec() as u64)
+}
 
-    debug!("Passed opts: {:?}", opt);
+fn parse_xdp_mode(mode: &str) -> Result<XdpFlags> {
+    match mode {
+        "skb" => Ok(XdpFlags::SKB_MODE),
+        "native" => Ok(XdpFlags::DRV_MODE),
+        _ => anyhow::bail!("invalid mode, use either 'skb' or 'native'"),
+    }
+}
 
-    env_logger::init();
-
-    let mut ebpf: aya::Ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
-        env!("OUT_DIR"),
-        "/traff-off-func"
-    )))?;
-    match aya_log::EbpfLogger::init(&mut ebpf) {
-        Err(_e) => {
-            warn!("logging is not used in the ebpf program");
-        }
+fn setup_ebpf_logging(ebpf: &mut Ebpf) {
+    match aya_log::EbpfLogger::init(ebpf) {
+        Err(_) => warn!("logging is not used in the ebpf program"),
         Ok(logger) => {
-            let mut logger =
-                tokio::io::unix::AsyncFd::with_interest(logger, tokio::io::Interest::READABLE)?;
             tokio::task::spawn(async move {
-                loop {
-                    let mut guard = logger.readable_mut().await.unwrap();
-                    guard.get_inner_mut().flush();
-                    guard.clear_ready();
+                if let Ok(mut logger) =
+                    tokio::io::unix::AsyncFd::with_interest(logger, tokio::io::Interest::READABLE)
+                {
+                    loop {
+                        if let Ok(mut guard) = logger.readable_mut().await {
+                            guard.get_inner_mut().flush();
+                            guard.clear_ready();
+                        }
+                    }
                 }
             });
         }
     }
-    let Opt { network, pnic } = opt;
+}
 
+fn attach_container_xdp(
+    ebpf: &mut Ebpf,
+    containers: &[ContainerMetadata],
+    mode: XdpFlags,
+) -> Result<()> {
     let program: &mut Xdp = ebpf
         .program_mut("xdp_redirect_containers")
         .unwrap()
         .try_into()?;
     program.load()?;
 
-    let containers = get_containers(&network).await?;
-
-    for container in &containers {
+    for container in containers {
         debug!(
             "attaching xdp program to: {}, ifindex: {} of container {}",
             container.veth, container.ifindex, container.name
         );
-        program.attach(&container.veth, XdpFlags::SKB_MODE)
-        .context("failed to attach the XDP program with default flags - try changing XdpFlags::default() to XdpFlags::SKB_MODE")?;
+        program.attach(&container.veth, mode).context(
+            "failed to attach the XDP program - try changing XdpFlags to XdpFlags::SKB_MODE",
+        )?;
     }
+    Ok(())
+}
 
+fn setup_devmap(ebpf: &mut Ebpf, containers: &[ContainerMetadata]) -> Result<()> {
     let mut devmap = DevMapHash::try_from(ebpf.map_mut("REDIRECT_MAP").unwrap())?;
-    for container in &containers {
+    for container in containers {
         debug!(
             "inserting a pair into devmap: <{:?},{}>",
             container.ipv4, container.ifindex
         );
-        let _ = devmap.insert(u32::from(container.ipv4), container.ifindex, None, 0);
+        devmap.insert(u32::from(container.ipv4), container.ifindex, None, 0)?;
+    }
+    Ok(())
+}
+
+fn setup_pnic(
+    ebpf: &mut Ebpf,
+    nic: &str,
+    mode: XdpFlags,
+    containers: &[ContainerMetadata],
+) -> Result<()> {
+    let ifindex = if_nametoindex(nic)?;
+    debug!("ifindex of the pnic is: {}", ifindex);
+
+    let mut devmap = DevMapHash::try_from(ebpf.map_mut("REDIRECT_MAP").unwrap())?;
+    devmap.insert(0, ifindex, None, 0)?;
+
+    let program: &mut Xdp = ebpf.program_mut("xdp_redirect_host").unwrap().try_into()?;
+    program.load()?;
+    program
+        .attach(nic, mode)
+        .context("failed to attach the XDP program to the provided NIC")?;
+
+    let nic_addr = get_if_addr(nic)?;
+    let mut expose_map = HashMap::try_from(ebpf.take_map("EXPOSE_MAP").unwrap())?;
+    let mut array = Array::try_from(ebpf.take_map("PNIC_IP_ARRAY").unwrap())?;
+    array.set(0, nic_addr, 0)?;
+
+    let (lower, upper) = reserve_kernel_ports(PORT_RANGE)?;
+    let mut port_allocator = PortAllocator::new(lower..=upper);
+
+    for container in containers {
+        let host_port = port_allocator
+            .allocate_next()
+            .context("No available ports")?;
+        let container_port = IPERF_SERVER_PORT; // TODO: obtain the port of the app dynamically  
+
+        expose_map.insert(
+            host_port,
+            ContainerInfo {
+                container_ip: u32::from(container.ipv4),
+                container_mac: container.mac_address,
+                container_port,
+            },
+            0,
+        )?;
+
+        info!(
+            "exposing container {}:{} on port: {}",
+            container.ipv4, container_port, host_port
+        );
     }
 
-    if let Some(ref nic) = pnic {
-        let ifindex = if_nametoindex(nic.as_str())?;
-        debug!("ifindex of the pnic is: {}", ifindex);
-        let _ = devmap.insert(0, ifindex, None, 0);
-        let program: &mut Xdp = ebpf.program_mut("xdp_redirect_host").unwrap().try_into()?;
-        program.load()?;
-        program
-            .attach(nic, XdpFlags::SKB_MODE)
-            .context("failed to attach the XDP program to the provided NIC, does the NIC exist?")?;
-    }
+    let mut conntrack: HashMap<_, ConnectionTuple, FlowState> =
+        HashMap::try_from(ebpf.take_map("UDP_CONNTRACK").unwrap())?;
 
-    if let Some(ref nic) = pnic {
-        let nic_addr = get_if_addr(nic.to_string()).unwrap();
-        let mut port_map = HashMap::try_from(ebpf.map_mut("PORT_MAP").unwrap())?;
-        let (lower, upper) = reserve_kernel_ports(PORT_RANGE).unwrap();
-        let mut port_allocator = PortAllocator::new(lower..=upper);
-        for container in &containers {
-            let value = HostPair {
-                host_ip: nic_addr,
-                host_port: port_allocator.allocate_next().unwrap(),
-            };
-            let _ = port_map.insert(u32::from(container.ipv4), value, 0);
+    tokio::task::spawn(async move {
+        let mut time_interval = time::interval(time::Duration::from_secs(30));
+        loop {
+            time_interval.tick().await;
+
+            let to_remove: Vec<_> = conntrack
+                .iter()
+                .filter_map(|res| res.ok())
+                .filter(|(_, v)| v.timeout <= get_nsecs())
+                .map(|(k, _)| k)
+                .collect();
+
+            for key in to_remove {
+                let _ = conntrack.remove(&key);
+            }
         }
-    }
+    });
 
-    // links live as long as ebpf program does
-    let protected_ebpf = Arc::new(Mutex::new(
-        aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
-            env!("OUT_DIR"),
-            "/traff-off-func"
-        )))
-        .unwrap(),
-    ));
+    Ok(())
+}
+
+fn attach_namespace_pass_programs(containers: &[ContainerMetadata], mode: XdpFlags) -> Result<()> {
+    let protected_ebpf = Arc::new(Mutex::new(Ebpf::load(aya::include_bytes_aligned!(
+        concat!(env!("OUT_DIR"), "/traff-off-func")
+    ))?));
 
     let mut handles = vec![];
     for container in containers {
@@ -252,23 +318,20 @@ async fn main() -> anyhow::Result<()> {
             let protected_ebpf_clone = Arc::clone(&protected_ebpf);
 
             let handle = std::thread::spawn(move || {
-                let net_ns_path = format!("/proc/{}/ns/net", pid);
-                let net_ns_file = File::open(&net_ns_path).unwrap();
+                let net_ns_path = format!("/proc/{pid}/ns/net");
+                let net_ns_file = std::fs::File::open(net_ns_path).unwrap();
 
                 let mut guard = protected_ebpf_clone.lock().unwrap();
-
                 let program: &mut Xdp = guard.program_mut("xdp_pass").unwrap().try_into().unwrap();
 
-                match program.load() {
-                    Err(ProgramError::AlreadyLoaded) => {}
-                    Err(e) => {
-                        panic!("failed to load the XDP program: {e}");
-                    }
-                    _ => {}
+                if let Err(e) = program.load()
+                    && !matches!(e, ProgramError::AlreadyLoaded)
+                {
+                    panic!("failed to load the XDP program: {e}");
                 }
-                use std::os::unix::io::AsFd;
+
                 nix::sched::setns(net_ns_file.as_fd(), CloneFlags::CLONE_NEWNET).unwrap();
-                program.attach("eth0", XdpFlags::SKB_MODE).unwrap();
+                program.attach("eth0", mode).unwrap();
             });
 
             handles.push(handle);
@@ -276,12 +339,40 @@ async fn main() -> anyhow::Result<()> {
     }
 
     for handler in handles {
-        handler.join().unwrap();
+        let _ = handler.join();
     }
 
-    let ctrl_c = signal::ctrl_c();
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let opt = Opt::parse();
+    env_logger::init();
+    debug!("Passed opts: {:?}", opt);
+
+    let mode = parse_xdp_mode(&opt.mode)?;
+
+    let mut ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
+        env!("OUT_DIR"),
+        "/traff-off-func"
+    )))?;
+
+    setup_ebpf_logging(&mut ebpf);
+
+    let containers = get_containers(&opt.network).await?;
+
+    attach_container_xdp(&mut ebpf, &containers, mode)?;
+    setup_devmap(&mut ebpf, &containers)?;
+
+    if let Some(ref nic) = opt.pnic {
+        setup_pnic(&mut ebpf, nic, mode, &containers)?;
+    }
+
+    attach_namespace_pass_programs(&containers, mode)?;
+
     println!("Waiting for Ctrl-C...");
-    ctrl_c.await?;
+    signal::ctrl_c().await?;
     println!("Exiting...");
 
     Ok(())
