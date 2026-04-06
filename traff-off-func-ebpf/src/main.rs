@@ -20,7 +20,6 @@ use aya_ebpf::{
     maps::{Array, DevMapHash, LruHashMap},
     programs::XdpContext,
 };
-use aya_log_ebpf::debug;
 use network_types::{
     eth::{EthHdr, EtherType},
     ip::{IpProto, Ipv4Hdr},
@@ -99,7 +98,7 @@ fn handle_ip_redirect(ctx: &XdpContext, flag: Flags) -> Result<u32, ()> {
     let nat = if flag == Flags::Snat {
         process_udp_snat(ctx, src_ip, dst_ip, src_addr_ptr, eth_src_addr, proto)?
     } else {
-        process_udp_dnat(ctx, src_ip, dst_ip, dst_addr_ptr, proto)?
+        process_udp_dnat(ctx, src_ip, dst_ip, dst_addr_ptr, eth_dst_addr, proto)?
     };
 
     // if none, then conntrack for dnat is missing
@@ -117,17 +116,8 @@ fn handle_ip_redirect(ctx: &XdpContext, flag: Flags) -> Result<u32, ()> {
     }
 
     match REDIRECT_MAP.redirect(devmap_key, xdp_action::XDP_PASS.into()) {
-        Ok(code) => {
-            debug!(
-                ctx,
-                "successfully redirecting based on the existing entry: {}", devmap_key
-            );
-            Ok(code)
-        }
-        Err(code) => {
-            debug!(ctx, "something went wrong");
-            Ok(code)
-        }
+        Ok(code) => Ok(code),
+        Err(code) => Ok(code),
     }
 }
 
@@ -212,12 +202,12 @@ fn process_udp_snat(
 
     let snat = NATData::new(host_ip, host_port, fib_macs, 0);
 
-    let return_macs = FibMacs {
+    let dnat_macs = FibMacs {
         fib_smac: fib_macs.fib_smac,
         fib_dmac: container_mac,
     };
 
-    let dnat = NATData::new(src_ip, src_port, return_macs, src_ip);
+    let dnat = NATData::new(src_ip, src_port, dnat_macs, src_ip);
 
     let dkey = ConnectionTuple::new(remote_ip, host_ip, remote_port, host_port);
     let conn_orig = FlowState::new(snat, Direction::Original, time + TIMEOUT_NEW);
@@ -239,6 +229,7 @@ fn process_udp_dnat(
     src_ip: u32,
     dst_ip: u32,
     dst_addr_ptr: *mut u32,
+    eth_dst_addr: *mut [u8; 6],
     proto: IpProto,
 ) -> Result<Option<NATData>, ()> {
     let src_port_ptr: *mut u16 =
@@ -298,27 +289,27 @@ fn process_udp_dnat(
         container_ip,
         container_mac,
         container_port,
+        ifindex,
     } = match unsafe { EXPOSE_MAP.get(host_port) } {
         Some(info) => *info,
         None => return Ok(None), // not an exposed service, pass
     };
 
-    let ingress_ifindex: u32 = ctx.ingress_ifindex() as u32;
     let tot_len_ptr: *const [u8; 2] = ptr_at(ctx, EthHdr::LEN + offset_of!(Ipv4Hdr, tot_len))?;
     let tot_len: u16 = u16::from_be_bytes(unsafe { *tot_len_ptr });
 
-    let Some(fib_macs) = get_fib_macs(ctx, host_ip, remote_ip, proto, tot_len, ingress_ifindex)
-    else {
+    let Some(fib_macs) = get_fib_macs(ctx, host_ip, remote_ip, proto, tot_len, ifindex) else {
         return Ok(None);
     };
 
     let snat = NATData::new(host_ip, host_port, fib_macs, 0);
+    let host_mac = unsafe { *eth_dst_addr };
 
-    let return_macs = FibMacs {
-        fib_smac: fib_macs.fib_smac,
+    let dnat_macs = FibMacs {
+        fib_smac: host_mac,
         fib_dmac: container_mac,
     };
-    let dnat = NATData::new(container_ip, container_port, return_macs, container_ip);
+    let dnat = NATData::new(container_ip, container_port, dnat_macs, container_ip);
 
     let fwd_key = ConnectionTuple::new(remote_ip, host_ip, remote_port, host_port);
     let rev_key = ConnectionTuple::new(container_ip, remote_ip, container_port, remote_port);

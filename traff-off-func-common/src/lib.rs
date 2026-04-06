@@ -18,7 +18,8 @@ pub struct HostPair {
 pub struct ContainerInfo {
     pub container_ip: u32,
     pub container_mac: [u8; 6],
-    pub container_port: u16
+    pub container_port: u16,
+    pub ifindex: u32,
 }
 
 #[derive(Default, Clone, Copy)]

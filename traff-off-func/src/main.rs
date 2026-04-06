@@ -1,10 +1,11 @@
 use std::{
     net::Ipv4Addr,
     os::unix::io::AsFd,
+    process::Command,
     sync::{Arc, Mutex},
 };
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, ensure};
 use aya::{
     Ebpf,
     maps::{Array, DevMapHash, HashMap},
@@ -235,6 +236,52 @@ fn setup_devmap(ebpf: &mut Ebpf, containers: &[ContainerMetadata]) -> Result<()>
     Ok(())
 }
 
+fn expose_ports(
+    expose_map: &mut HashMap<aya::maps::MapData, u16, ContainerInfo>,
+    host_port: u16,
+    container_info: ContainerInfo,
+) -> Result<()> {
+    expose_map.insert(host_port, container_info, 0)?;
+
+    let ContainerInfo {
+        container_ip,
+        container_port,
+        ..
+    } = container_info;
+
+    let status = Command::new("iptables")
+        .args([
+            "-t",
+            "nat",
+            "-A",
+            "PREROUTING",
+            "-p",
+            "tcp",
+            "--dport",
+            &host_port.to_string(),
+            "-j",
+            "DNAT",
+            "--to-destination",
+            &format!("{}:{}", Ipv4Addr::from_bits(container_ip), container_port),
+        ])
+        .status()?;
+
+    ensure!(
+        status.success(),
+        "failed to add iptables TCP rule for port {}",
+        host_port
+    );
+
+    info!(
+        "exposing container {}:{} on port: {}",
+        Ipv4Addr::from_bits(container_ip),
+        container_info.container_port,
+        host_port
+    );
+
+    Ok(())
+}
+
 fn setup_pnic(
     ebpf: &mut Ebpf,
     nic: &str,
@@ -267,20 +314,14 @@ fn setup_pnic(
             .context("No available ports")?;
         let container_port = IPERF_SERVER_PORT; // TODO: obtain the port of the app dynamically  
 
-        expose_map.insert(
-            host_port,
-            ContainerInfo {
-                container_ip: u32::from(container.ipv4),
-                container_mac: container.mac_address,
-                container_port,
-            },
-            0,
-        )?;
+        let container_info = ContainerInfo {
+            container_ip: u32::from(container.ipv4),
+            container_mac: container.mac_address,
+            container_port,
+            ifindex: container.ifindex,
+        };
 
-        info!(
-            "exposing container {}:{} on port: {}",
-            container.ipv4, container_port, host_port
-        );
+        expose_ports(&mut expose_map, host_port, container_info)?;
     }
 
     let mut conntrack: HashMap<_, ConnectionTuple, FlowState> =
@@ -345,6 +386,14 @@ fn attach_namespace_pass_programs(containers: &[ContainerMetadata], mode: XdpFla
     Ok(())
 }
 
+fn clean_up() -> Result<()> {
+    let status = Command::new("iptables")
+        .args(["-t", "nat", "-F", "PREROUTING"])
+        .status()?;
+    ensure!(status.success(), "failed to flush PREROUTING iptables");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let opt = Opt::parse();
@@ -373,7 +422,10 @@ async fn main() -> Result<()> {
 
     println!("Waiting for Ctrl-C...");
     signal::ctrl_c().await?;
-    println!("Exiting...");
 
+    println!("Cleaning up...");
+    clean_up()?;
+
+    println!("Exiting...");
     Ok(())
 }
