@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context as _, Result, ensure};
 use aya::{
     Ebpf,
-    maps::{Array, DevMapHash, HashMap},
+    maps::{DevMapHash, HashMap},
     programs::{ProgramError, Xdp, XdpFlags},
 };
 use clap::Parser;
@@ -25,11 +25,12 @@ use nix::{
     sched::CloneFlags,
 };
 use tokio::{signal, time};
-use traff_off_func::PortAllocator;
-use traff_off_func_common::{ConnectionTuple, ContainerInfo, FlowState};
-
-const PORT_RANGE: &str = "10000-12000";
-const IPERF_SERVER_PORT: u16 = 5201;
+use traff_off_func::{
+    ExposeMap, IPERF_SERVER_PORT, PORT_RANGE, RevExposeMap, api::server::setup_axum_server,
+    configuration::config::get_configuration, port_allocator::PortAllocator,
+    telemetry::init_logging,
+};
+use traff_off_func_common::{ConnectionTuple, ContainerInfo, FlowState, HostInfo};
 
 #[derive(Debug, Parser)]
 struct Opt {
@@ -238,10 +239,13 @@ fn setup_devmap(ebpf: &mut Ebpf, containers: &[ContainerMetadata]) -> Result<()>
 
 fn expose_ports(
     expose_map: &mut HashMap<aya::maps::MapData, u16, ContainerInfo>,
+    rev_expose_map: &mut HashMap<aya::maps::MapData, u16, HostInfo>,
     host_port: u16,
     container_info: ContainerInfo,
+    host_info: HostInfo,
 ) -> Result<()> {
     expose_map.insert(host_port, container_info, 0)?;
+    rev_expose_map.insert(container_info.container_port, host_info, 0)?;
 
     let ContainerInfo {
         container_ip,
@@ -287,7 +291,7 @@ fn setup_pnic(
     nic: &str,
     mode: XdpFlags,
     containers: &[ContainerMetadata],
-) -> Result<()> {
+) -> Result<(ExposeMap, RevExposeMap)> {
     let ifindex = if_nametoindex(nic)?;
     debug!("ifindex of the pnic is: {}", ifindex);
 
@@ -300,10 +304,8 @@ fn setup_pnic(
         .attach(nic, mode)
         .context("failed to attach the XDP program to the provided NIC")?;
 
-    let nic_addr = get_if_addr(nic)?;
     let mut expose_map = HashMap::try_from(ebpf.take_map("EXPOSE_MAP").unwrap())?;
-    let mut array = Array::try_from(ebpf.take_map("PNIC_IP_ARRAY").unwrap())?;
-    array.set(0, nic_addr, 0)?;
+    let mut rev_expose_map = HashMap::try_from(ebpf.take_map("REV_EXPOSE_MAP").unwrap())?;
 
     let (lower, upper) = reserve_kernel_ports(PORT_RANGE)?;
     let mut port_allocator = PortAllocator::new(lower..=upper);
@@ -321,7 +323,18 @@ fn setup_pnic(
             ifindex: container.ifindex,
         };
 
-        expose_ports(&mut expose_map, host_port, container_info)?;
+        let host_info = HostInfo {
+            host_ip: get_if_addr(nic)?,
+            host_port,
+        };
+
+        expose_ports(
+            &mut expose_map,
+            &mut rev_expose_map,
+            host_port,
+            container_info,
+            host_info,
+        )?;
     }
 
     let mut conntrack: HashMap<_, ConnectionTuple, FlowState> =
@@ -341,22 +354,23 @@ fn setup_pnic(
 
             for key in to_remove {
                 let _ = conntrack.remove(&key);
+                debug!("removing stale connection: {:?}", key);
             }
         }
     });
 
-    Ok(())
+    Ok((expose_map, rev_expose_map))
 }
 
-fn attach_namespace_pass_programs(containers: &[ContainerMetadata], mode: XdpFlags) -> Result<()> {
-    let protected_ebpf = Arc::new(Mutex::new(Ebpf::load(aya::include_bytes_aligned!(
-        concat!(env!("OUT_DIR"), "/traff-off-func")
-    ))?));
-
+fn attach_namespace_pass_programs(
+    protected_ebpf: &Arc<Mutex<Ebpf>>,
+    containers: &[ContainerMetadata],
+    mode: XdpFlags,
+) -> Result<()> {
     let mut handles = vec![];
     for container in containers {
         if let Some(pid) = container.pid {
-            let protected_ebpf_clone = Arc::clone(&protected_ebpf);
+            let protected_ebpf_clone = Arc::clone(protected_ebpf);
 
             let handle = std::thread::spawn(move || {
                 let net_ns_path = format!("/proc/{pid}/ns/net");
@@ -396,11 +410,8 @@ fn clean_up() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let opt = Opt::parse();
-    env_logger::init();
-    debug!("Passed opts: {:?}", opt);
-
-    let mode = parse_xdp_mode(&opt.mode)?;
+    let configuration = get_configuration().expect("Failed to read configuration.");
+    init_logging(&configuration)?;
 
     let mut ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
@@ -409,16 +420,24 @@ async fn main() -> Result<()> {
 
     setup_ebpf_logging(&mut ebpf);
 
-    let containers = get_containers(&opt.network).await?;
+    let containers = get_containers(&configuration.dataplane.network).await?;
+
+    let mode = parse_xdp_mode(&configuration.dataplane.mode)?;
 
     attach_container_xdp(&mut ebpf, &containers, mode)?;
     setup_devmap(&mut ebpf, &containers)?;
 
-    if let Some(ref nic) = opt.pnic {
-        setup_pnic(&mut ebpf, nic, mode, &containers)?;
-    }
+    let protected_ebpf: Arc<Mutex<Ebpf>> = Arc::new(Mutex::new(Ebpf::load(
+        aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/traff-off-func")),
+    )?));
+    attach_namespace_pass_programs(&protected_ebpf, &containers, mode)?;
 
-    attach_namespace_pass_programs(&containers, mode)?;
+    if let Some(ref nic) = configuration.dataplane.pnic {
+        let (expose_map, rev_expose_map) = setup_pnic(&mut ebpf, nic, mode, &containers)?;
+        tokio::task::spawn(async move {
+            let _ = setup_axum_server(&configuration, expose_map, rev_expose_map).await;
+        });
+    }
 
     println!("Waiting for Ctrl-C...");
     signal::ctrl_c().await?;

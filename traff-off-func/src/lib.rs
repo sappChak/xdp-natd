@@ -1,20 +1,16 @@
-use std::{collections::VecDeque, ops::RangeInclusive};
+use traff_off_func_common::{ContainerInfo, HostInfo};
+use aya::maps::HashMap;
 
-pub struct PortAllocator {
-    ports: VecDeque<u16>,
-}
+pub mod configuration;
+pub mod api;
+pub mod port_allocator;
+pub mod telemetry;
 
-impl PortAllocator {
-    pub fn new(range: RangeInclusive<u16>) -> Self {
-        let ports: VecDeque<u16> = range.collect();
-        Self { ports }
-    }
+pub const PORT_RANGE: &str = "10000-12000";
+pub const IPERF_SERVER_PORT: u16 = 5201;
 
-    pub fn allocate_next(&mut self) -> Option<u16> {
-        self.ports.pop_back()
-    }
+pub type ExposeMap = HashMap<aya::maps::MapData, u16, ContainerInfo>;
+pub type RevExposeMap = HashMap<aya::maps::MapData, u16, HostInfo>;
 
-    pub fn deallocate(&mut self, port: u16) {
-        self.ports.push_back(port);
-    }
-}
+
+

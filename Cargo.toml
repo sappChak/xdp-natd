@@ -27,6 +27,15 @@ log = { version = "0.4.22", default-features = false }
 tokio = { version = "1.40.0", default-features = false }
 which = { version = "8.0.0", default-features = false }
 macaddr = "1.0"
+axum = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.18", features = ["registry", "env-filter"] }
+tracing-bunyan-formatter = "0.3"
+tracing-log = "0.2.0"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+uuid = {version = "1", features = ["v4", "fast-rng", "macro-diagnostics"]}
+config = "0.15"
 
 [profile.release.package.traff-off-func-ebpf]
 debug = 2
