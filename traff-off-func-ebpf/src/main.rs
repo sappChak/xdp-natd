@@ -17,7 +17,7 @@ use aya_ebpf::{
     bindings::{BPF_NOEXIST, xdp_action},
     helpers::generated::bpf_ktime_get_ns,
     macros::{map, xdp},
-    maps::{Array, DevMapHash, LruHashMap},
+    maps::{DevMapHash, LruHashMap},
     programs::XdpContext,
 };
 use network_types::{
@@ -26,7 +26,7 @@ use network_types::{
     udp::UdpHdr,
 };
 use traff_off_func_common::{
-    ConnectionTuple, ContainerInfo, Direction, FibMacs, FlowState, NATData, TIMEOUT_EST,
+    ConnectionTuple, ContainerInfo, Direction, FibMacs, FlowState, HostInfo, NATData, TIMEOUT_EST,
     TIMEOUT_NEW,
 };
 use traff_off_func_ebpf::{
@@ -40,11 +40,11 @@ static REDIRECT_MAP: DevMapHash = DevMapHash::with_max_entries(256, 0);
 #[map(name = "UDP_CONNTRACK")]
 static UDP_CONNTRACK: LruHashMap<ConnectionTuple, FlowState> = LruHashMap::with_max_entries(256, 0);
 
-#[map(name = "PNIC_IP_ARRAY")]
-static PNIC_IP_ARRAY: Array<u32> = Array::with_max_entries(1, 0);
-
 #[map(name = "EXPOSE_MAP")]
 static EXPOSE_MAP: LruHashMap<u16, ContainerInfo> = LruHashMap::with_max_entries(256, 0);
+
+#[map(name = "REV_EXPOSE_MAP")]
+static REV_EXPOSE_MAP: LruHashMap<u16, HostInfo> = LruHashMap::with_max_entries(256, 0);
 
 #[xdp]
 pub fn xdp_pass(_ctx: XdpContext) -> u32 {
@@ -187,9 +187,9 @@ fn process_udp_snat(
     let tot_len: u16 = u16::from_be_bytes(unsafe { *tot_len_ptr });
     let container_mac = unsafe { *eth_src_addr };
 
-    let (host_ip, host_port) = match PNIC_IP_ARRAY.get(0) {
-        Some(ip) => (*ip, src_port), // TODO: a small chance of collision
-        None => return Ok(None),
+    let HostInfo { host_ip, host_port } = match unsafe { REV_EXPOSE_MAP.get(src_port) } {
+        Some(info) => *info,
+        None => return Ok(None), // not an exposed service, pass
     };
 
     let fib_macs = if let Some(fib_macs) =

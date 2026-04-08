@@ -6,15 +6,15 @@ use aya::Pod;
 pub const TIMEOUT_NEW: u64 = 30_000_000_000;
 pub const TIMEOUT_EST: u64 = 180_000_000_000;
 
-#[derive(Clone, Copy)]
 #[repr(C)]
-pub struct HostPair {
+#[derive(Clone, Copy)]
+pub struct HostInfo {
     pub host_ip: u32,
     pub host_port: u16,
 }
 
-#[derive(Clone, Copy)]
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ContainerInfo {
     pub container_ip: u32,
     pub container_mac: [u8; 6],
@@ -22,15 +22,15 @@ pub struct ContainerInfo {
     pub ifindex: u32,
 }
 
-#[derive(Default, Clone, Copy)]
 #[repr(C)]
+#[derive(Default, Clone, Copy)]
 pub struct FibMacs {
     pub fib_smac: [u8; 6],
     pub fib_dmac: [u8; 6],
 }
 
-#[derive(Clone, Copy)]
 #[repr(C)]
+#[derive(Clone, Copy, Debug)]
 pub struct ConnectionTuple {
     pub src_addr: u32,
     pub dst_addr: u32,
@@ -96,7 +96,7 @@ impl FlowState {
 }
 
 #[cfg(feature = "user")]
-unsafe impl Pod for HostPair {}
+unsafe impl Pod for HostInfo {}
 
 #[cfg(feature = "user")]
 unsafe impl Pod for ConnectionTuple {}
