@@ -27,7 +27,7 @@ echo "------------------------------------------------------------"
 
 for ((i = 1; i <= ITERATIONS; i++)); do
     echo -n "  Run $i/$ITERATIONS: "
-    
+
     RAW_JSON=$(iperf3 -c "$TARGET_IP" -t "$DURATION" -J 2>/dev/null)
 
     if [ $? -ne 0 ]; then

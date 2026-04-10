@@ -3,7 +3,7 @@
 # Network Performance Evaluation Script
 # Methodology: 20 iterations, 30-second duration, Median calculation
 
-TARGET_IP="172.20.0.20" 
+TARGET_IP="172.20.0.20"
 DURATION=30
 ITERATIONS=20
 
@@ -32,7 +32,7 @@ echo "------------------------------------------------------------"
 echo "Phase 1: Running iperf3 (TCP Throughput)..."
 for ((i = 1; i <= ITERATIONS; i++)); do
     echo -n "  Run $i/$ITERATIONS: "
-    
+
     RAW_JSON=$(iperf3 -c "$TARGET_IP" -t "$DURATION" -J 2>/dev/null)
 
     if [ $? -ne 0 ]; then
@@ -61,7 +61,7 @@ echo "------------------------------------------------------------"
 echo "Phase 2: Running sockperf (UDP Latency under load)..."
 for ((i = 1; i <= ITERATIONS; i++)); do
     echo -n "  Run $i/$ITERATIONS: "
-    
+
     RAW_OUTPUT=$(sockperf under-load -i "$TARGET_IP" -t "$DURATION" 2>&1)
 
     if [ $? -ne 0 ]; then

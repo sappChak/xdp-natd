@@ -25,7 +25,7 @@ calculate_median() {
     fi
 
     if ((count % 2 == 0)); then
-        echo | awk -v a="${sorted[mid-1]}" -v b="${sorted[mid]}" '{printf "%.3f", (a+b)/2}'
+        echo | awk -v a="${sorted[mid - 1]}" -v b="${sorted[mid]}" '{printf "%.3f", (a+b)/2}'
     else
         echo "${sorted[mid]}"
     fi
