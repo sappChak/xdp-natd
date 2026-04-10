@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     net::Ipv4Addr,
     os::unix::io::AsFd,
     process::Command,
@@ -8,17 +9,16 @@ use std::{
 use anyhow::{Context as _, Result, ensure};
 use aya::{
     Ebpf,
-    maps::{DevMapHash, HashMap},
+    maps::DevMapHash,
     programs::{ProgramError, Xdp, XdpFlags},
 };
-use clap::Parser;
 use docker_api::{
     Docker,
     conn::TtyChunk,
     opts::{ExecCreateOpts, ExecStartOpts},
 };
 use futures::StreamExt;
-use log::{debug, info, warn};
+use log::{debug, warn};
 use macaddr::MacAddr6;
 use nix::{
     net::if_::{if_nameindex, if_nametoindex},
@@ -26,33 +26,14 @@ use nix::{
 };
 use tokio::{signal, time};
 use traff_off_func::{
-    ExposeMap, IPERF_SERVER_PORT, PORT_RANGE, RevExposeMap, api::server::setup_axum_server,
-    configuration::config::get_configuration, port_allocator::PortAllocator,
-    telemetry::init_logging,
+    AyaHashMap, ContainerMetadata, ContainersMap, ExposeMap, PORT_RANGE, RevExposeMap,
+    api::server::setup_axum_server, configuration::config::get_configuration,
+    port_allocator::PortAllocator, telemetry::init_logging,
 };
-use traff_off_func_common::{ConnectionTuple, ContainerInfo, FlowState, HostInfo};
+use traff_off_func_common::{ConnectionTuple, FlowState};
 
-#[derive(Debug, Parser)]
-struct Opt {
-    #[arg(short, long, default_value = "docker0")]
-    network: String,
-    #[arg(short, long)]
-    pnic: Option<String>,
-    #[arg(short, long)]
-    mode: String,
-}
-
-struct ContainerMetadata {
-    name: String,
-    veth: String,
-    ipv4: Ipv4Addr,
-    ifindex: u32,
-    pid: Option<isize>,
-    mac_address: [u8; 6],
-}
-
-async fn get_containers(network: &str) -> Result<Vec<ContainerMetadata>> {
-    let mut container_metas = vec![];
+async fn get_containers(network: &str) -> Result<ContainersMap> {
+    let mut container_metas = HashMap::new();
     let docker = Docker::unix("/var/run/docker.sock");
     let network_info = docker.networks().get(network).inspect().await?;
 
@@ -117,14 +98,17 @@ async fn get_containers(network: &str) -> Result<Vec<ContainerMetadata>> {
 
             debug!("interface name: {veth}, ip: {ipv4}");
 
-            container_metas.push(ContainerMetadata {
-                name,
-                veth,
-                ipv4,
-                mac_address,
-                ifindex: iflink,
-                pid,
-            });
+            container_metas.insert(
+                u32::from(ipv4),
+                ContainerMetadata {
+                    name,
+                    veth,
+                    ipv4,
+                    mac_address,
+                    ifindex: iflink,
+                    pid,
+                },
+            );
 
             break; // move to the next container
         }
@@ -133,7 +117,7 @@ async fn get_containers(network: &str) -> Result<Vec<ContainerMetadata>> {
     Ok(container_metas)
 }
 
-fn get_if_addr(ifname: &str) -> Result<u32> {
+pub fn get_if_addr(ifname: &str) -> Result<u32> {
     nix::ifaddrs::getifaddrs()?
         .find_map(|ifaddr| {
             if ifaddr.interface_name == ifname {
@@ -204,7 +188,7 @@ fn setup_ebpf_logging(ebpf: &mut Ebpf) {
 
 fn attach_container_xdp(
     ebpf: &mut Ebpf,
-    containers: &[ContainerMetadata],
+    containers: &HashMap<u32, ContainerMetadata>,
     mode: XdpFlags,
 ) -> Result<()> {
     let program: &mut Xdp = ebpf
@@ -213,7 +197,7 @@ fn attach_container_xdp(
         .try_into()?;
     program.load()?;
 
-    for container in containers {
+    for container in containers.values() {
         debug!(
             "attaching xdp program to: {}, ifindex: {} of container {}",
             container.veth, container.ifindex, container.name
@@ -225,9 +209,9 @@ fn attach_container_xdp(
     Ok(())
 }
 
-fn setup_devmap(ebpf: &mut Ebpf, containers: &[ContainerMetadata]) -> Result<()> {
+fn setup_devmap(ebpf: &mut Ebpf, containers: &HashMap<u32, ContainerMetadata>) -> Result<()> {
     let mut devmap = DevMapHash::try_from(ebpf.map_mut("REDIRECT_MAP").unwrap())?;
-    for container in containers {
+    for container in containers.values() {
         debug!(
             "inserting a pair into devmap: <{:?},{}>",
             container.ipv4, container.ifindex
@@ -237,62 +221,9 @@ fn setup_devmap(ebpf: &mut Ebpf, containers: &[ContainerMetadata]) -> Result<()>
     Ok(())
 }
 
-fn expose_ports(
-    expose_map: &mut HashMap<aya::maps::MapData, u16, ContainerInfo>,
-    rev_expose_map: &mut HashMap<aya::maps::MapData, u16, HostInfo>,
-    host_port: u16,
-    container_info: ContainerInfo,
-    host_info: HostInfo,
-) -> Result<()> {
-    expose_map.insert(host_port, container_info, 0)?;
-    rev_expose_map.insert(container_info.container_port, host_info, 0)?;
-
-    let ContainerInfo {
-        container_ip,
-        container_port,
-        ..
-    } = container_info;
-
-    let status = Command::new("iptables")
-        .args([
-            "-t",
-            "nat",
-            "-A",
-            "PREROUTING",
-            "-p",
-            "tcp",
-            "--dport",
-            &host_port.to_string(),
-            "-j",
-            "DNAT",
-            "--to-destination",
-            &format!("{}:{}", Ipv4Addr::from_bits(container_ip), container_port),
-        ])
-        .status()?;
-
-    ensure!(
-        status.success(),
-        "failed to add iptables TCP rule for port {}",
-        host_port
-    );
-
-    info!(
-        "exposing container {}:{} on port: {}",
-        Ipv4Addr::from_bits(container_ip),
-        container_info.container_port,
-        host_port
-    );
-
-    Ok(())
-}
-
-fn setup_pnic(
-    ebpf: &mut Ebpf,
-    nic: &str,
-    mode: XdpFlags,
-    containers: &[ContainerMetadata],
-) -> Result<(ExposeMap, RevExposeMap)> {
-    let ifindex = if_nametoindex(nic)?;
+fn setup_pnic(ebpf: &mut Ebpf, nic_name: &str, mode: XdpFlags) -> Result<u32> {
+    let ifindex = if_nametoindex(nic_name)?;
+    let nic_addr = get_if_addr(nic_name)?;
     debug!("ifindex of the pnic is: {}", ifindex);
 
     let mut devmap = DevMapHash::try_from(ebpf.map_mut("REDIRECT_MAP").unwrap())?;
@@ -301,44 +232,11 @@ fn setup_pnic(
     let program: &mut Xdp = ebpf.program_mut("xdp_redirect_host").unwrap().try_into()?;
     program.load()?;
     program
-        .attach(nic, mode)
+        .attach(nic_name, mode)
         .context("failed to attach the XDP program to the provided NIC")?;
 
-    let mut expose_map = HashMap::try_from(ebpf.take_map("EXPOSE_MAP").unwrap())?;
-    let mut rev_expose_map = HashMap::try_from(ebpf.take_map("REV_EXPOSE_MAP").unwrap())?;
-
-    let (lower, upper) = reserve_kernel_ports(PORT_RANGE)?;
-    let mut port_allocator = PortAllocator::new(lower..=upper);
-
-    for container in containers {
-        let host_port = port_allocator
-            .allocate_next()
-            .context("No available ports")?;
-        let container_port = IPERF_SERVER_PORT; // TODO: obtain the port of the app dynamically  
-
-        let container_info = ContainerInfo {
-            container_ip: u32::from(container.ipv4),
-            container_mac: container.mac_address,
-            container_port,
-            ifindex: container.ifindex,
-        };
-
-        let host_info = HostInfo {
-            host_ip: get_if_addr(nic)?,
-            host_port,
-        };
-
-        expose_ports(
-            &mut expose_map,
-            &mut rev_expose_map,
-            host_port,
-            container_info,
-            host_info,
-        )?;
-    }
-
-    let mut conntrack: HashMap<_, ConnectionTuple, FlowState> =
-        HashMap::try_from(ebpf.take_map("UDP_CONNTRACK").unwrap())?;
+    let mut conntrack: AyaHashMap<ConnectionTuple, FlowState> =
+        AyaHashMap::try_from(ebpf.take_map("UDP_CONNTRACK").unwrap())?;
 
     tokio::task::spawn(async move {
         let mut time_interval = time::interval(time::Duration::from_secs(30));
@@ -359,16 +257,16 @@ fn setup_pnic(
         }
     });
 
-    Ok((expose_map, rev_expose_map))
+    Ok(nic_addr)
 }
 
 fn attach_namespace_pass_programs(
     protected_ebpf: &Arc<Mutex<Ebpf>>,
-    containers: &[ContainerMetadata],
+    containers: &HashMap<u32, ContainerMetadata>,
     mode: XdpFlags,
 ) -> Result<()> {
     let mut handles = vec![];
-    for container in containers {
+    for container in containers.values() {
         if let Some(pid) = container.pid {
             let protected_ebpf_clone = Arc::clone(protected_ebpf);
 
@@ -433,9 +331,23 @@ async fn main() -> Result<()> {
     attach_namespace_pass_programs(&protected_ebpf, &containers, mode)?;
 
     if let Some(ref nic) = configuration.dataplane.pnic {
-        let (expose_map, rev_expose_map) = setup_pnic(&mut ebpf, nic, mode, &containers)?;
+        let nic_addr = setup_pnic(&mut ebpf, nic, mode)?;
+
+        let expose_map: ExposeMap = AyaHashMap::try_from(ebpf.take_map("EXPOSE_MAP").unwrap())?;
+        let rev_expose_map: RevExposeMap =
+            AyaHashMap::try_from(ebpf.take_map("REV_EXPOSE_MAP").unwrap())?;
+        let (lower, upper) = reserve_kernel_ports(PORT_RANGE)?;
+        let port_allocator = PortAllocator::new(lower..=upper);
         tokio::task::spawn(async move {
-            let _ = setup_axum_server(&configuration, expose_map, rev_expose_map).await;
+            let _ = setup_axum_server(
+                &configuration,
+                expose_map,
+                rev_expose_map,
+                port_allocator,
+                containers,
+                nic_addr,
+            )
+            .await;
         });
     }
 

@@ -2365,6 +2365,7 @@ dependencies = [
  "nix",
  "serde",
  "serde-aux",
+ "thiserror 2.0.18",
  "tokio",
  "tower-http",
  "tracing",

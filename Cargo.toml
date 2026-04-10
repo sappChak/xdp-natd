@@ -36,6 +36,7 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
 uuid = {version = "1", features = ["v4", "fast-rng", "macro-diagnostics"]}
 config = "0.15"
+thiserror = "2.0"
 
 [profile.release.package.traff-off-func-ebpf]
 debug = 2
