@@ -34,6 +34,9 @@ use traff_off_func_ebpf::{
     helpers::{apply_ip_dnat, apply_ip_snat, get_fib_macs, ptr_at, ptr_at_mut, rewrite_macs},
 };
 
+const IP_MF: u16 = 0x2000;
+const IP_OFFSET: u16 = 0x1FFF;
+
 #[map(name = "REDIRECT_MAP")]
 static REDIRECT_MAP: DevMapHash = DevMapHash::with_max_entries(256, 0);
 
@@ -81,6 +84,17 @@ fn handle_ip_redirect(ctx: &XdpContext, flag: Flags) -> Result<u32, ()> {
     let proto: IpProto = unsafe { *ipv4_proto_ptr };
 
     if !matches!(proto, IpProto::Udp | IpProto::Tcp | IpProto::Icmp) {
+        return Ok(xdp_action::XDP_PASS);
+    }
+
+    let ihl = u8::from_be(unsafe { *ptr_at::<u8>(ctx, EthHdr::LEN)? } & 0x0F);
+    if ihl != 5 {
+        return Ok(xdp_action::XDP_PASS);
+    }
+
+    let frag_off: u16 =
+        u16::from_be(unsafe { *ptr_at(ctx, EthHdr::LEN + offset_of!(Ipv4Hdr, frags))? });
+    if frag_off & (IP_MF | IP_OFFSET) != 0 {
         return Ok(xdp_action::XDP_PASS);
     }
 
