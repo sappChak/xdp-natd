@@ -253,7 +253,7 @@ pub unsafe fn rewrite_macs(
     let fib_smac = fib.fib_smac;
     let fib_dmac = fib.fib_dmac;
     unsafe {
-        // log_mac_address_change(ctx, eth_src_addr, eth_dst_addr, fib_smac, fib_dmac);
+        log_mac_address_change(ctx, eth_src_addr, eth_dst_addr, fib_smac, fib_dmac);
         *eth_src_addr = fib_smac;
         *eth_dst_addr = fib_dmac;
     }
