@@ -153,7 +153,7 @@ fn reserve_kernel_ports(range: &str) -> Result<(u16, u16)> {
 }
 
 fn get_nsecs() -> u64 {
-    let ts = nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC)
+    let ts = nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC_COARSE)
         .expect("failed to get monotonic time");
     (ts.tv_sec() as u64) * 1_000_000_000 + (ts.tv_nsec() as u64)
 }
@@ -222,6 +222,7 @@ fn setup_devmap(ebpf: &mut Ebpf, containers: &HashMap<u32, ContainerMetadata>) -
 }
 
 fn setup_pnic(ebpf: &mut Ebpf, nic_name: &str, mode: XdpFlags) -> Result<u32> {
+    debug!("setting up the pnic with name: {}", nic_name);
     let ifindex = if_nametoindex(nic_name)?;
     let nic_addr = get_if_addr(nic_name)?;
     debug!("ifindex of the pnic is: {}", ifindex);
@@ -252,7 +253,6 @@ fn setup_pnic(ebpf: &mut Ebpf, nic_name: &str, mode: XdpFlags) -> Result<u32> {
 
             for key in to_remove {
                 let _ = conntrack.remove(&key);
-                debug!("removing stale connection: {:?}", key);
             }
         }
     });

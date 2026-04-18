@@ -1,6 +1,4 @@
 #![allow(clippy::missing_safety_doc)]
-use core::mem::{self};
-
 use aya_ebpf::{
     bindings::{BPF_FIB_LOOKUP_DIRECT, bpf_fib_lookup},
     helpers::bpf_fib_lookup,
@@ -48,7 +46,6 @@ pub fn do_fib_lookup(
     fib.__bindgen_anon_1.tot_len = tot_len;
     fib.ifindex = ifindex;
 
-    // BPF_FIB_LOOKUP_DIRECT - lookup without policy checks, better perf
     unsafe {
         bpf_fib_lookup(
             ctx.ctx as *mut _,
@@ -60,32 +57,6 @@ pub fn do_fib_lookup(
 }
 
 #[inline(always)]
-pub fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
-    let start: usize = ctx.data();
-    let end: usize = ctx.data_end();
-    let len: usize = mem::size_of::<T>();
-
-    if start + len + offset > end {
-        return Err(());
-    }
-
-    Ok((start + offset) as *const T)
-}
-
-#[inline(always)]
-pub fn ptr_at_mut<T>(ctx: &XdpContext, offset: usize) -> Result<*mut T, ()> {
-    let start: usize = ctx.data();
-    let end: usize = ctx.data_end();
-    let len: usize = mem::size_of::<T>();
-
-    if start + len + offset > end {
-        return Err(());
-    }
-
-    Ok((start + offset) as *mut T)
-}
-
-#[inline(always)]
 pub unsafe fn apply_ip_dnat(
     nat: &NATData,
     ip_check: *mut u16,
@@ -93,24 +64,23 @@ pub unsafe fn apply_ip_dnat(
     dst_addr_ptr: *mut u32,
     dst_port_ptr: *mut u16,
 ) {
+    let nat_port_be = nat.nat_port.to_be();
+    let nat_addr_be = nat.nat_addr.to_be();
+
     unsafe {
         if *udp_check != 0 {
-            *udp_check = csum_replace4(
-                *udp_check as u32,
-                *dst_port_ptr as u32,
-                nat.nat_port.to_be() as u32,
-            );
-            *dst_port_ptr = nat.nat_port.to_be();
+            *udp_check = csum_replace4(*udp_check as u32, *dst_port_ptr as u32, nat_port_be as u32);
+            *dst_port_ptr = nat_port_be;
 
-            *udp_check = csum_replace4(*udp_check as u32, *dst_addr_ptr, nat.nat_addr.to_be());
+            *udp_check = csum_replace4(*udp_check as u32, *dst_addr_ptr, nat_addr_be);
 
             if *udp_check == 0 {
                 *udp_check = 0xFFFF;
             }
         }
 
-        *ip_check = csum_replace4(*ip_check as u32, *dst_addr_ptr, nat.nat_addr.to_be());
-        *dst_addr_ptr = nat.nat_addr.to_be();
+        *ip_check = csum_replace4(*ip_check as u32, *dst_addr_ptr, nat_addr_be);
+        *dst_addr_ptr = nat_addr_be;
     }
 }
 
@@ -122,22 +92,22 @@ pub unsafe fn apply_ip_snat(
     src_addr_ptr: *mut u32,
     src_port_ptr: *mut u16,
 ) {
+    let nat_port_be = nat.nat_port.to_be();
+    let nat_addr_be = nat.nat_addr.to_be();
+
     unsafe {
         if *udp_check != 0 {
-            *udp_check = csum_replace4(
-                *udp_check as u32,
-                *src_port_ptr as u32,
-                nat.nat_port.to_be() as u32,
-            );
-            *src_port_ptr = nat.nat_port.to_be();
-            *udp_check = csum_replace4(*udp_check as u32, *src_addr_ptr, nat.nat_addr.to_be());
+            *udp_check = csum_replace4(*udp_check as u32, *src_port_ptr as u32, nat_port_be as u32);
+            *src_port_ptr = nat_port_be;
+
+            *udp_check = csum_replace4(*udp_check as u32, *src_addr_ptr, nat_addr_be);
 
             if *udp_check == 0 {
                 *udp_check = 0xFFFF;
             }
         }
-        *ip_check = csum_replace4(*ip_check as u32, *src_addr_ptr, nat.nat_addr.to_be());
-        *src_addr_ptr = nat.nat_addr.to_be();
+        *ip_check = csum_replace4(*ip_check as u32, *src_addr_ptr, nat_addr_be);
+        *src_addr_ptr = nat_addr_be;
     }
 }
 
@@ -172,9 +142,10 @@ pub unsafe fn log_mac_address_change(
     ctx: &XdpContext,
     eth_src_addr: *mut [u8; 6],
     eth_dst_addr: *mut [u8; 6],
-    new_src_mac: [u8; 6],
-    new_dst_mac: [u8; 6],
+    fib: FibMacs,
 ) {
+    let new_src_mac = fib.fib_smac;
+    let new_dst_mac = fib.fib_dmac;
     unsafe {
         debug!(
             &ctx,
@@ -221,7 +192,6 @@ pub fn get_fib_macs(
     ingress_ifindex: u32,
 ) -> Option<FibMacs> {
     let mut fib: bpf_fib_lookup = unsafe { core::mem::zeroed() };
-    log_fib_lookup(ctx, src_ip, dst_ip, proto, tot_len, ingress_ifindex);
 
     let rc = do_fib_lookup(
         ctx,
@@ -244,17 +214,9 @@ pub fn get_fib_macs(
 }
 
 #[inline(always)]
-pub unsafe fn rewrite_macs(
-    ctx: &XdpContext,
-    eth_src_addr: *mut [u8; 6],
-    eth_dst_addr: *mut [u8; 6],
-    fib: FibMacs,
-) {
-    let fib_smac = fib.fib_smac;
-    let fib_dmac = fib.fib_dmac;
+pub unsafe fn rewrite_macs(eth_src_addr: *mut [u8; 6], eth_dst_addr: *mut [u8; 6], fib: FibMacs) {
     unsafe {
-        log_mac_address_change(ctx, eth_src_addr, eth_dst_addr, fib_smac, fib_dmac);
-        *eth_src_addr = fib_smac;
-        *eth_dst_addr = fib_dmac;
+        core::ptr::copy_nonoverlapping(&fib.fib_smac as *const [u8; 6], eth_src_addr, 1);
+        core::ptr::copy_nonoverlapping(&fib.fib_dmac as *const [u8; 6], eth_dst_addr, 1);
     }
 }
