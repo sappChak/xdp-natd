@@ -20,12 +20,35 @@ services:
       - "8088:5201/tcp"
       - "8088:5201/udp"
     # command: /bin/sh -c "ethtool -K eth0 rx off tx off tso off gso off gro off && sleep infinity"
-    command: /bin/sh -c "ethtool -K eth0 tx off && sleep infinity"
+    command: /bin/sh -c "ethtool -K eth0 tx off && iperf3 -s"
     privileged: true
     # cpuset: "3"
     networks:
       xdp-bridge:
         ipv4_address: 172.20.0.20
+
+  traff-off-func:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+    image: traff-off-func:latest
+    container_name: traff-off-func
+    privileged: true
+    network_mode: "host"
+    pid: "host"
+    environment:
+      - RUST_LOG=debug
+      - APP_ENV=production
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /sys/fs/bpf:/sys/fs/bpf
+      - /lib/modules:/lib/modules:ro
+      - ../configuration/:/configuration:ro
+    depends_on:
+      node-a:
+        condition: service_started
+      node-b:
+        condition: service_started
 
 networks:
   xdp-bridge:
