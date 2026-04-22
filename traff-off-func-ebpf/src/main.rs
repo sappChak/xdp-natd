@@ -212,18 +212,27 @@ fn process_udp_snat(
         return Ok(Some(snat));
     }
 
-    let ingress_ifindex: u32 = ctx.ingress_ifindex() as u32;
     let tot_len = u16::from_be_bytes(ipv4.tot_len);
     let container_mac = eth.src_addr;
 
-    let HostInfo { host_ip, host_port } = match unsafe { REV_EXPOSE_MAP.get(src_port) } {
+    let HostInfo {
+        host_ip,
+        host_port,
+        host_ifindex,
+    } = match unsafe { REV_EXPOSE_MAP.get(src_port) } {
         Some(info) => *info,
         None => return Ok(None),
     };
 
-    let fib_macs = if let Some(fib_macs) =
-        get_fib_macs(ctx, host_ip, dst_ip, IpProto::Udp, tot_len, ingress_ifindex)
-    {
+    // fib lookup requires big-endian
+    let fib_macs = if let Some(fib_macs) = get_fib_macs(
+        ctx,
+        u32::to_be(host_ip),
+        u32::to_be(dst_ip),
+        IpProto::Udp,
+        tot_len,
+        host_ifindex,
+    ) {
         fib_macs
     } else {
         return Ok(None);
@@ -332,14 +341,22 @@ fn process_udp_dnat(
         container_ip,
         container_mac,
         container_port,
-        ifindex,
+        ..
     } = match unsafe { EXPOSE_MAP.get(dst_port) } {
         Some(info) => *info,
         None => return Ok(None),
     };
 
+    let ifindex: u32 = ctx.ingress_ifindex() as u32;
     let tot_len = u16::from_be_bytes(ipv4.tot_len);
-    let Some(fib_macs) = get_fib_macs(ctx, dst_ip, src_ip, IpProto::Udp, tot_len, ifindex) else {
+    let Some(fib_macs) = get_fib_macs(
+        ctx,
+        u32::to_be(dst_ip),
+        u32::to_be(src_ip),
+        IpProto::Udp,
+        tot_len,
+        ifindex,
+    ) else {
         return Ok(None);
     };
 

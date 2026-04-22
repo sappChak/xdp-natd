@@ -5,7 +5,7 @@ pub struct AppState {
     pub rev_expose_map: RevExposeMap,
     pub port_allocator: PortAllocator,
     pub container_metas: ContainersMap,
-    pub nic_addr: u32,
+    pub nic_info: (u32, u32),
 }
 
 impl AppState {
@@ -14,14 +14,14 @@ impl AppState {
         rev_exposed_map: RevExposeMap,
         port_allocator: PortAllocator,
         container_metas: ContainersMap,
-        nic_addr: u32,
+        nic_info: (u32, u32),
     ) -> Self {
         Self {
             expose_map,
             rev_expose_map: rev_exposed_map,
             port_allocator,
             container_metas,
-            nic_addr,
+            nic_info,
         }
     }
 }

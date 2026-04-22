@@ -1,6 +1,6 @@
 #![allow(clippy::missing_safety_doc)]
 use aya_ebpf::{
-    bindings::{BPF_FIB_LOOKUP_DIRECT, bpf_fib_lookup},
+    bindings::{BPF_FIB_LOOKUP_OUTPUT, bpf_fib_lookup},
     helpers::bpf_fib_lookup,
     programs::XdpContext,
 };
@@ -51,7 +51,7 @@ pub fn do_fib_lookup(
             ctx.ctx as *mut _,
             fib,
             core::mem::size_of_val(fib) as i32,
-            BPF_FIB_LOOKUP_DIRECT,
+            BPF_FIB_LOOKUP_OUTPUT,
         )
     }
 }
@@ -116,13 +116,12 @@ pub fn log_fib_lookup(
     ctx: &XdpContext,
     src_ip: u32,
     dst_ip: u32,
-    proto: IpProto,
     tot_len: u16,
     ingress_ifindex: u32,
 ) {
     debug!(
         &ctx,
-        "performing fib lookup for src_ip: {}.{}.{}.{} dst_ip: {}.{}.{}.{} proto: {} tot_len: {} ingress_ifindex: {}",
+        "performing fib lookup for src_ip: {}.{}.{}.{} dst_ip: {}.{}.{}.{} tot_len: {} ingress_ifindex: {}",
         (src_ip >> 24) & 0xFF,
         (src_ip >> 16) & 0xFF,
         (src_ip >> 8) & 0xFF,
@@ -131,7 +130,6 @@ pub fn log_fib_lookup(
         (dst_ip >> 16) & 0xFF,
         (dst_ip >> 8) & 0xFF,
         dst_ip & 0xFF,
-        proto as u8,
         tot_len,
         ingress_ifindex
     );

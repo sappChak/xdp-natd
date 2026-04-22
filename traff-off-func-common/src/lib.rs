@@ -11,6 +11,7 @@ pub const TIMEOUT_EST: u64 = 180_000_000_000;
 pub struct HostInfo {
     pub host_ip: u32,
     pub host_port: u16,
+    pub host_ifindex: u32,
 }
 
 #[repr(C)]

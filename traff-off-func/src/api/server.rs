@@ -33,7 +33,7 @@ pub async fn setup_axum_server(
     rev_expose_map: RevExposeMap,
     port_allocator: PortAllocator,
     containers: ContainersMap,
-    nic_addr: u32,
+    nic_info: (u32, u32),
 ) -> Result<()> {
     let prefix = configuration.application.prefix.clone();
     let state = AppState::new(
@@ -41,7 +41,7 @@ pub async fn setup_axum_server(
         rev_expose_map,
         port_allocator,
         containers,
-        nic_addr,
+        nic_info,
     );
     let router = router(state, prefix);
     start_server(configuration, router).await?;

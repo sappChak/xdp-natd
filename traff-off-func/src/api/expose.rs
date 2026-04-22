@@ -104,9 +104,11 @@ pub async fn expose_port(
         .allocate_next()
         .ok_or_else(|| AppError::Capacity("No available host ports left".to_string()))?;
 
+    let (host_ip, host_ifindex) = lock.nic_info;
     let host_info = HostInfo {
-        host_ip: lock.nic_addr,
+        host_ip,
         host_port,
+        host_ifindex,
     };
 
     if lock

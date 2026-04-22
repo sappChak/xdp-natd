@@ -221,7 +221,7 @@ fn setup_devmap(ebpf: &mut Ebpf, containers: &HashMap<u32, ContainerMetadata>) -
     Ok(())
 }
 
-fn setup_pnic(ebpf: &mut Ebpf, nic_name: &str, mode: XdpFlags) -> Result<u32> {
+fn setup_pnic(ebpf: &mut Ebpf, nic_name: &str, mode: XdpFlags) -> Result<(u32, u32)> {
     debug!("setting up the pnic with name: {}", nic_name);
     let ifindex = if_nametoindex(nic_name)?;
     let nic_addr = get_if_addr(nic_name)?;
@@ -257,7 +257,7 @@ fn setup_pnic(ebpf: &mut Ebpf, nic_name: &str, mode: XdpFlags) -> Result<u32> {
         }
     });
 
-    Ok(nic_addr)
+    Ok((nic_addr, ifindex))
 }
 
 fn attach_namespace_pass_programs(
@@ -331,7 +331,7 @@ async fn main() -> Result<()> {
     attach_namespace_pass_programs(&protected_ebpf, &containers, mode)?;
 
     if let Some(ref nic) = configuration.dataplane.pnic {
-        let nic_addr = setup_pnic(&mut ebpf, nic, mode)?;
+        let (nic_addr, nic_index) = setup_pnic(&mut ebpf, nic, mode)?;
 
         let expose_map: ExposeMap = AyaHashMap::try_from(ebpf.take_map("EXPOSE_MAP").unwrap())?;
         let rev_expose_map: RevExposeMap =
@@ -345,7 +345,7 @@ async fn main() -> Result<()> {
                 rev_expose_map,
                 port_allocator,
                 containers,
-                nic_addr,
+                (nic_addr, nic_index),
             )
             .await;
         });
