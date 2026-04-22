@@ -2,8 +2,8 @@ FROM debian:bookworm-slim
 
 WORKDIR /data
 
-COPY evaluate_network.sh evaluate_latency.sh evaluate_throughput.sh ./
-RUN chmod +x evaluate_network.sh evaluate_latency.sh evaluate_throughput.sh
+COPY evaluate_uplink.sh evaluate_downlink.sh ./
+RUN chmod +x evaluate_uplink.sh evaluate_downlink.sh
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -23,6 +23,7 @@ RUN apt-get update && \
         linux-perf \
         stress-ng \
         python3 \
+        jq \
     && apt-get autoremove -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \

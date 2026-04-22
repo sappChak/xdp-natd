@@ -1,28 +1,27 @@
 services:
-  node-a:
+  test-node-a:
     build:
       context: .
       dockerfile: Dockerfile
     image: xdp-thesis-toolkit:latest
-    container_name: xdp-node-a
-    # command: /bin/sh -c "ethtool -K eth0 rx off tx off tso off gso off gro off && sleep infinity"
+    profiles: ["client"]
+    container_name: test-node-a
     command: /bin/sh -c "ethtool -K eth0 tx off && sleep infinity"
     privileged: true
-    # cpuset: "2"
     networks:
       xdp-bridge:
         ipv4_address: 172.20.0.10
 
-  node-b:
+  test-node-b:
     image: xdp-thesis-toolkit:latest
-    container_name: xdp-node-b
+    container_name: test-node-b
+    profiles: ["server"]
     ports:
       - "8088:5201/tcp"
       - "8088:5201/udp"
-    # command: /bin/sh -c "ethtool -K eth0 rx off tx off tso off gso off gro off && sleep infinity"
-    command: /bin/sh -c "ethtool -K eth0 tx off && iperf3 -s"
+      - "8089:11111/udp"
+    command: /bin/sh -c "ethtool -K eth0 tx off && iperf3 -s -p 5201 -D && sockperf sr -p 11111 --daemonize && sleep infinity"
     privileged: true
-    # cpuset: "3"
     networks:
       xdp-bridge:
         ipv4_address: 172.20.0.20
@@ -32,23 +31,19 @@ services:
       context: ../
       dockerfile: Dockerfile
     image: traff-off-func:latest
+    profiles: ["offload"]
     container_name: traff-off-func
     privileged: true
     network_mode: "host"
     pid: "host"
     environment:
-      - RUST_LOG=debug
+      - RUST_LOG=info
       - APP_ENV=production
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /sys/fs/bpf:/sys/fs/bpf
       - /lib/modules:/lib/modules:ro
       - ../configuration/:/configuration:ro
-    depends_on:
-      node-a:
-        condition: service_started
-      node-b:
-        condition: service_started
 
 networks:
   xdp-bridge:
