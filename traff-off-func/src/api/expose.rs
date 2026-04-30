@@ -7,7 +7,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use traff_off_func_common::{ContainerInfo, HostInfo};
+use traff_off_func_common::ContainerInfo;
 
 use crate::api::{AppError, SharedAppState};
 
@@ -104,13 +104,6 @@ pub async fn expose_port(
         .allocate_next()
         .ok_or_else(|| AppError::Capacity("No available host ports left".to_string()))?;
 
-    let (host_ip, host_ifindex) = lock.nic_info;
-    let host_info = HostInfo {
-        host_ip,
-        host_port,
-        host_ifindex,
-    };
-
     if lock
         .rev_expose_map
         .get(&container_info.container_port, 0)
@@ -120,14 +113,6 @@ pub async fn expose_port(
         return Err(AppError::Conflict(
             "Container port is already exposed".to_string(),
         ));
-    }
-
-    if let Err(e) = lock
-        .rev_expose_map
-        .insert(container_info.container_port, host_info, 1)
-    {
-        lock.port_allocator.deallocate(host_port);
-        return Err(anyhow::anyhow!("Failed to insert into rev_expose_map: {}", e).into());
     }
 
     if let Err(e) = lock.expose_map.insert(host_port, container_info, 1) {

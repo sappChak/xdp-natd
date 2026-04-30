@@ -24,13 +24,19 @@ use nix::{
     net::if_::{if_nameindex, if_nametoindex},
     sched::CloneFlags,
 };
-use tokio::{signal, time};
+use tokio::{
+    signal::{
+        self,
+        unix::{SignalKind, signal},
+    },
+    time,
+};
 use traff_off_func::{
     AyaHashMap, ContainerMetadata, ContainersMap, ExposeMap, PORT_RANGE, RevExposeMap,
     api::server::setup_axum_server, configuration::config::get_configuration,
     port_allocator::PortAllocator, telemetry::init_logging,
 };
-use traff_off_func_common::{ConnectionTuple, FlowState};
+use traff_off_func_common::{ConnectionTuple, FlowState, HostInfo};
 
 async fn get_containers(network: &str) -> Result<ContainersMap> {
     let mut container_metas = HashMap::new();
@@ -334,8 +340,11 @@ async fn main() -> Result<()> {
         let (nic_addr, nic_index) = setup_pnic(&mut ebpf, nic, mode)?;
 
         let expose_map: ExposeMap = AyaHashMap::try_from(ebpf.take_map("EXPOSE_MAP").unwrap())?;
-        let rev_expose_map: RevExposeMap =
+
+        let mut rev_expose_map: RevExposeMap =
             AyaHashMap::try_from(ebpf.take_map("REV_EXPOSE_MAP").unwrap())?;
+        let _ = rev_expose_map.insert(0, HostInfo::new(nic_addr, nic_index), 0);
+
         let (lower, upper) = reserve_kernel_ports(PORT_RANGE)?;
         let port_allocator = PortAllocator::new(lower..=upper);
         tokio::task::spawn(async move {
@@ -351,12 +360,20 @@ async fn main() -> Result<()> {
         });
     }
 
-    println!("Waiting for Ctrl-C...");
-    signal::ctrl_c().await?;
+    println!("Waiting for Ctrl-C or SIGTERM");
+    let mut stream = signal(SignalKind::terminate())?;
+
+    tokio::select! {
+        _ = signal::ctrl_c() => {
+            println!("Received Ctrl-C, shutting down...");
+                    }
+        _ = stream.recv() => {
+            println!("Received SIGTERM, shutting down...");
+        }
+    }
 
     println!("Cleaning up...");
     clean_up()?;
 
-    println!("Exiting...");
     Ok(())
 }

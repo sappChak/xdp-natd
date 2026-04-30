@@ -10,8 +10,16 @@ pub const TIMEOUT_EST: u64 = 180_000_000_000;
 #[derive(Clone, Copy)]
 pub struct HostInfo {
     pub host_ip: u32,
-    pub host_port: u16,
     pub host_ifindex: u32,
+}
+
+impl HostInfo {
+    pub fn new(host_ip: u32, host_ifindex: u32) -> Self {
+        Self {
+            host_ip,
+            host_ifindex,
+        }
+    }
 }
 
 #[repr(C)]

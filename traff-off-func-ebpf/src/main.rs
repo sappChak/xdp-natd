@@ -95,9 +95,9 @@ fn try_xdp_redirect(ctx: &XdpContext, flag: Flags) -> Result<u32, ()> {
     let dst_ip = u32::from_be_bytes(ipv4.dst_addr);
     let src_ip = u32::from_be_bytes(ipv4.src_addr);
 
-    if let Ok(xdp_code) = REDIRECT_MAP.redirect(dst_ip, xdp_action::XDP_PASS.into()) {
-        return Ok(xdp_code);
-    }
+    // if let Ok(xdp_code) = REDIRECT_MAP.redirect(dst_ip, 0) {
+    //     return Ok(xdp_code);
+    // }
 
     if ipv4.proto != IpProto::Udp {
         return Ok(xdp_action::XDP_PASS);
@@ -152,9 +152,9 @@ fn process_udp_snat(
     let src_port = u16::from_be(unsafe { *(udp as *const UdpHdr as *const u16) });
     let dst_port = u16::from_be(unsafe { *((udp as *const UdpHdr as *const u16).add(1)) });
 
-    let key = ConnectionTuple::new(src_ip, dst_ip, src_port, dst_port);
+    let skey = ConnectionTuple::new(src_ip, dst_ip, src_port, dst_port);
 
-    if let Some(state_ptr) = UDP_CONNTRACK.get_ptr_mut(key) {
+    if let Some(state_ptr) = UDP_CONNTRACK.get_ptr_mut(skey) {
         let time: u64 = unsafe { bpf_ktime_get_coarse_ns() };
         let state = unsafe { &mut *state_ptr };
         let mut update_reverse = false;
@@ -217,14 +217,15 @@ fn process_udp_snat(
 
     let HostInfo {
         host_ip,
-        host_port,
         host_ifindex,
-    } = match unsafe { REV_EXPOSE_MAP.get(src_port) } {
+        ..
+    } = match unsafe { REV_EXPOSE_MAP.get(0) } {
         Some(info) => *info,
         None => return Ok(None),
     };
+    let host_port = src_port;
 
-    // fib lookup requires big-endian
+    // get src and dst MAC addrs for egress direction from the host NIC perspective
     let fib_macs = if let Some(fib_macs) = get_fib_macs(
         ctx,
         u32::to_be(host_ip),
@@ -238,19 +239,21 @@ fn process_udp_snat(
         return Ok(None);
     };
 
+    // <cont_ip, cont_port, cont_mac> => <host_ip, host_port, host_mac>
     let snat = NATData::new(host_ip, host_port, fib_macs, 0);
     let dnat_macs = FibMacs {
         fib_smac: fib_macs.fib_smac,
         fib_dmac: container_mac,
     };
-    let dnat = NATData::new(src_ip, src_port, dnat_macs, src_ip);
 
     let dkey = ConnectionTuple::new(dst_ip, host_ip, dst_port, host_port);
+    let dnat = NATData::new(src_ip, src_port, dnat_macs, src_ip);
+
     let time: u64 = unsafe { bpf_ktime_get_coarse_ns() };
     let conn_orig = FlowState::new(snat, Direction::Original, time + TIMEOUT_NEW);
     let conn_reply = FlowState::new(dnat, Direction::Reply, time + TIMEOUT_NEW);
 
-    let _ = UDP_CONNTRACK.insert(key, conn_orig, BPF_NOEXIST.into());
+    let _ = UDP_CONNTRACK.insert(skey, conn_orig, BPF_NOEXIST.into());
     let _ = UDP_CONNTRACK.insert(dkey, conn_reply, BPF_NOEXIST.into());
 
     unsafe {
@@ -349,6 +352,8 @@ fn process_udp_dnat(
 
     let ifindex: u32 = ctx.ingress_ifindex() as u32;
     let tot_len = u16::from_be_bytes(ipv4.tot_len);
+
+    // get src and dst MAC addrs for source nat
     let Some(fib_macs) = get_fib_macs(
         ctx,
         u32::to_be(dst_ip),
@@ -360,24 +365,26 @@ fn process_udp_dnat(
         return Ok(None);
     };
 
-    let snat = NATData::new(dst_ip, dst_port, fib_macs, 0);
     let host_mac = eth.dst_addr;
-
     let dnat_macs = FibMacs {
         fib_smac: host_mac,
         fib_dmac: container_mac,
     };
+
+    let dkey = ConnectionTuple::new(src_ip, dst_ip, src_port, dst_port);
+    // dst IP changes from host IP to container IP
+    // src_mac=host_MAC instead of next_hop_MAC, dst_mac=container_MAC instead of host_MAC
     let dnat = NATData::new(container_ip, container_port, dnat_macs, container_ip);
 
-    let fwd_key = ConnectionTuple::new(src_ip, dst_ip, src_port, dst_port);
-    let rev_key = ConnectionTuple::new(container_ip, src_ip, container_port, src_port);
+    let snat = NATData::new(dst_ip, dst_port, fib_macs, 0);
+    let skey = ConnectionTuple::new(container_ip, src_ip, container_port, src_port);
 
     let time: u64 = unsafe { bpf_ktime_get_coarse_ns() };
     let conn_orig = FlowState::new(dnat, Direction::Original, time + TIMEOUT_NEW);
     let conn_reply = FlowState::new(snat, Direction::Reply, time + TIMEOUT_NEW);
 
-    let _ = UDP_CONNTRACK.insert(fwd_key, conn_orig, BPF_NOEXIST.into());
-    let _ = UDP_CONNTRACK.insert(rev_key, conn_reply, BPF_NOEXIST.into());
+    let _ = UDP_CONNTRACK.insert(dkey, conn_orig, BPF_NOEXIST.into());
+    let _ = UDP_CONNTRACK.insert(skey, conn_reply, BPF_NOEXIST.into());
 
     unsafe {
         apply_ip_dnat(
