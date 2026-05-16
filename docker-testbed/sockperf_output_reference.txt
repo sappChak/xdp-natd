@@ -1,0 +1,26 @@
+core-up@core-up-Standard-PC-Q35-ICH9-2009:~/traff-off-func/docker-testbed$ sockperf pp -i 192.168.6.10 -p 8089 -t 60
+sockperf: == version #3.7-no.git ==
+sockperf[CLIENT] send on:sockperf: using recvfrom() to block on socket(s)
+
+[ 0] IP = 192.168.6.10    PORT =  8089 # UDP
+sockperf: Warmup stage (sending a few dummy messages)...
+sockperf: Starting test...
+sockperf: Test end (interrupted by timer)
+sockperf: Test ended
+sockperf: [Total Run] RunTime=60.000 sec; Warm up time=400 msec; SentMessages=1041469; ReceivedMessages=1041468
+sockperf: ========= Printing statistics for Server No: 0
+sockperf: [Valid Duration] RunTime=59.550 sec; SentMessages=1035456; ReceivedMessages=1035456
+sockperf: ====> avg-latency=28.729 (std-dev=13.019)
+sockperf: # dropped messages = 0; # duplicated messages = 0; # out-of-order messages = 0
+sockperf: Summary: Latency is 28.729 usec
+sockperf: Total 1035456 observations; each percentile contains 10354.56 observations
+sockperf: ---> <MAX> observation = 2696.712
+sockperf: ---> percentile 99.999 = 1794.967
+sockperf: ---> percentile 99.990 =  511.716
+sockperf: ---> percentile 99.900 =   91.715
+sockperf: ---> percentile 99.000 =   47.496
+sockperf: ---> percentile 90.000 =   34.250
+sockperf: ---> percentile 75.000 =   30.718
+sockperf: ---> percentile 50.000 =   27.527
+sockperf: ---> percentile 25.000 =   24.722
+sockperf: ---> <MIN> observation =   19.963

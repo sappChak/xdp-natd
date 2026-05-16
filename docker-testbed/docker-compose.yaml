@@ -19,12 +19,23 @@ services:
     ports:
       - "8088:5201/tcp"
       - "8088:5201/udp"
-      - "8089:11111/udp"
-    command: /bin/sh -c "ethtool -K eth0 tx off && iperf3 -s -p 5201 -D && sockperf sr -p 11111 --daemonize && sleep infinity"
+    command: /bin/sh -c "ethtool -K eth0 tx off && iperf3 -s -J -p 5201 -D && sleep infinity"
     privileged: true
     networks:
       xdp-bridge:
         ipv4_address: 172.20.0.20
+
+  test-node-c:
+    image: xdp-thesis-toolkit:latest
+    container_name: test-node-c
+    profiles: ["server"]
+    ports:
+      - "8089:11111/udp"
+    command: /bin/sh -c "ethtool -K eth0 tx off && sockperf sr -p 11111 --daemonize && sleep infinity"
+    privileged: true
+    networks:
+      xdp-bridge:
+        ipv4_address: 172.20.0.30
 
   traff-off-func:
     build:
@@ -47,7 +58,7 @@ services:
 
 networks:
   xdp-bridge:
-    name: xdp-test-net
+    name: br-xdp
     driver: bridge
     driver_opts:
       com.docker.network.bridge.name: br-xdp

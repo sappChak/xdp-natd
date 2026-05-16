@@ -2,8 +2,8 @@ FROM debian:bookworm-slim
 
 WORKDIR /data
 
-COPY evaluate_uplink.sh evaluate_downlink.sh ./
-RUN chmod +x evaluate_uplink.sh evaluate_downlink.sh
+COPY evaluate_throughput.sh evaluate_latency.sh exec_order.txt  ./
+RUN chmod +x evaluate_latency.sh evaluate_throughput.sh 
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
