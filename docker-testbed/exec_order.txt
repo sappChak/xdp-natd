@@ -1,8 +1,8 @@
 1. VANILLA:
    a) ./evaluate_throughput.sh baseline 192.168.6.10 8088 0
-   b) ./evaluate_latency.sh baseline 192.168.6.10 8089 
+   b) ./evaluate_latency.sh baseline 192.168.6.10 8089 60 10 
 
 2. XDP:
    a) EXPOSE 5201 ON 172.20.0.20, EXPOSE 11111 ON 172.20.0.30
    b) ./evaluate_throughput.sh xdp_enabled 192.168.6.10 12000 0
-   c) ./evaluate_latency.sh xdp_enabled 192.168.6.10 11999
+   c) ./evaluate_latency.sh xdp_enabled 192.168.6.10 11999 60 10
