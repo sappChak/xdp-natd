@@ -9,14 +9,10 @@ use std::{
 use anyhow::{Context as _, Result, ensure};
 use aya::{
     Ebpf,
-    maps::DevMapHash,
+    maps::{Array, DevMapHash},
     programs::{ProgramError, Xdp, XdpFlags},
 };
-use docker_api::{
-    Docker,
-    conn::TtyChunk,
-    opts::{ExecCreateOpts, ExecStartOpts},
-};
+use docker_api::{Docker, conn::TtyChunk, opts::ExecStartOpts};
 use futures::StreamExt;
 use log::{debug, warn};
 use macaddr::MacAddr6;
@@ -32,13 +28,13 @@ use tokio::{
     time,
 };
 use traff_off_func::{
-    AyaHashMap, ContainerMetadata, ContainersMap, ExposeMap, PORT_RANGE, RevExposeMap,
+    AyaHashMap, ContainerMap, ContainerMetadata, ExposeMap, PORT_RANGE,
     api::server::setup_axum_server, configuration::config::get_configuration,
     port_allocator::PortAllocator, telemetry::init_logging,
 };
-use traff_off_func_common::{ConnectionTuple, FlowState, HostInfo};
+use traff_off_func_common::{ConnectionTuple, FlowState, NICInfo};
 
-async fn get_containers(network: &str) -> Result<ContainersMap> {
+async fn get_containers(network: &str) -> Result<ContainerMap> {
     let mut container_metas = HashMap::new();
     let docker = Docker::unix("/var/run/docker.sock");
     let network_info = docker.networks().get(network).inspect().await?;
@@ -47,7 +43,8 @@ async fn get_containers(network: &str) -> Result<ContainersMap> {
         return Ok(container_metas);
     };
 
-    let exec_opts = ExecCreateOpts::builder()
+    // prepare command for execution in a docker container
+    let exec_opts = docker_api::opts::ExecCreateOpts::builder()
         .command(vec!["cat", "/sys/class/net/eth0/iflink"])
         .attach_stdout(true)
         .attach_stderr(true)
@@ -60,6 +57,7 @@ async fn get_containers(network: &str) -> Result<ContainersMap> {
 
         debug!("{:?}", container);
 
+        // execute the command in this container and obtain the output
         let mut exec_stream = container
             .exec(&exec_opts, &ExecStartOpts::default())
             .await?;
@@ -67,19 +65,13 @@ async fn get_containers(network: &str) -> Result<ContainersMap> {
         while let Some(result) = exec_stream.next().await {
             let chunks = match result? {
                 TtyChunk::StdOut(items) => items,
-                TtyChunk::StdErr(items) => {
-                    debug!(
-                        "Error inside container: {}",
-                        String::from_utf8_lossy(&items)
-                    );
-                    continue;
-                }
-                TtyChunk::StdIn(_) => continue,
+                _ => continue,
             };
 
             let output = String::from_utf8_lossy(&chunks);
             let iflink: u32 = output.trim().parse().context("Failed to parse iflink")?;
 
+            // check whether the host-level veth exists
             let interfaces = if_nameindex()?;
             let interface = interfaces
                 .into_iter()
@@ -95,21 +87,21 @@ async fn get_containers(network: &str) -> Result<ContainersMap> {
                 .parse::<MacAddr6>()?
                 .into_array();
 
-            let ipv4: Ipv4Addr = container_info
+            let ipv4_address: Ipv4Addr = container_info
                 .i_pv_4_address
                 .as_deref()
                 .and_then(|ip| ip.split('/').next())
                 .context("Missing or invalid IPv4 address")?
                 .parse()?;
 
-            debug!("interface name: {veth}, ip: {ipv4}");
+            debug!("interface name: {veth}, ip: {ipv4_address}");
 
             container_metas.insert(
-                u32::from(ipv4),
+                u32::from(ipv4_address),
                 ContainerMetadata {
                     name,
                     veth,
-                    ipv4,
+                    ipv4_address,
                     mac_address,
                     ifindex: iflink,
                     pid,
@@ -192,11 +184,7 @@ fn setup_ebpf_logging(ebpf: &mut Ebpf) {
     }
 }
 
-fn attach_container_xdp(
-    ebpf: &mut Ebpf,
-    containers: &HashMap<u32, ContainerMetadata>,
-    mode: XdpFlags,
-) -> Result<()> {
+fn attach_container_xdp(ebpf: &mut Ebpf, containers: &ContainerMap, mode: XdpFlags) -> Result<()> {
     let program: &mut Xdp = ebpf
         .program_mut("xdp_redirect_containers")
         .unwrap()
@@ -220,9 +208,14 @@ fn setup_devmap(ebpf: &mut Ebpf, containers: &HashMap<u32, ContainerMetadata>) -
     for container in containers.values() {
         debug!(
             "inserting a pair into devmap: <{:?},{}>",
-            container.ipv4, container.ifindex
+            container.ipv4_address, container.ifindex
         );
-        devmap.insert(u32::from(container.ipv4), container.ifindex, None, 0)?;
+        devmap.insert(
+            u32::from(container.ipv4_address),
+            container.ifindex,
+            None,
+            0,
+        )?;
     }
     Ok(())
 }
@@ -281,7 +274,7 @@ fn attach_namespace_pass_programs(
                 let net_ns_file = std::fs::File::open(net_ns_path).unwrap();
 
                 let mut guard = protected_ebpf_clone.lock().unwrap();
-                let program: &mut Xdp = guard.program_mut("xdp_pass").unwrap().try_into().unwrap();
+                let program: &mut Xdp = guard.program_mut("xdp_stub").unwrap().try_into().unwrap();
 
                 if let Err(e) = program.load()
                     && !matches!(e, ProgramError::AlreadyLoaded)
@@ -324,9 +317,9 @@ async fn main() -> Result<()> {
 
     setup_ebpf_logging(&mut ebpf);
 
-    let containers = get_containers(&configuration.dataplane.network).await?;
+    let containers = get_containers(&configuration.data_plane.network).await?;
 
-    let mode = parse_xdp_mode(&configuration.dataplane.mode)?;
+    let mode = parse_xdp_mode(&configuration.data_plane.mode)?;
 
     attach_container_xdp(&mut ebpf, &containers, mode)?;
     setup_devmap(&mut ebpf, &containers)?;
@@ -336,27 +329,18 @@ async fn main() -> Result<()> {
     )?));
     attach_namespace_pass_programs(&protected_ebpf, &containers, mode)?;
 
-    if let Some(ref nic) = configuration.dataplane.pnic {
+    if let Some(ref nic) = configuration.data_plane.pnic {
         let (nic_addr, nic_index) = setup_pnic(&mut ebpf, nic, mode)?;
 
-        let expose_map: ExposeMap = AyaHashMap::try_from(ebpf.take_map("EXPOSE_MAP").unwrap())?;
+        let mut pnic_array = Array::try_from(ebpf.take_map("PNIC_ARRAY").unwrap())?;
+        let _ = pnic_array.set(0, NICInfo::new(nic_addr, nic_index), 0);
 
-        let mut rev_expose_map: RevExposeMap =
-            AyaHashMap::try_from(ebpf.take_map("REV_EXPOSE_MAP").unwrap())?;
-        let _ = rev_expose_map.insert(0, HostInfo::new(nic_addr, nic_index), 0);
+        let expose_map: ExposeMap = AyaHashMap::try_from(ebpf.take_map("EXPOSE_MAP").unwrap())?;
 
         let (lower, upper) = reserve_kernel_ports(PORT_RANGE)?;
         let port_allocator = PortAllocator::new(lower..=upper);
         tokio::task::spawn(async move {
-            let _ = setup_axum_server(
-                &configuration,
-                expose_map,
-                rev_expose_map,
-                port_allocator,
-                containers,
-                (nic_addr, nic_index),
-            )
-            .await;
+            let _ = setup_axum_server(&configuration, expose_map, port_allocator, containers).await;
         });
     }
 

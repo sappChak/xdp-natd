@@ -6,8 +6,8 @@ use crate::configuration::environment::Environment;
 
 #[derive(Deserialize)]
 pub struct Configuration {
-    pub application: ApplicationConfiguration,
-    pub dataplane: DataPlaneConfiguration,
+    pub control_plane: ApplicationConfiguration,
+    pub data_plane: DataPlaneConfiguration,
 }
 
 #[derive(Deserialize)]

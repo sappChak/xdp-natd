@@ -15,7 +15,7 @@ use aya_ebpf::{
     bindings::{BPF_NOEXIST, xdp_action},
     helpers::generated::bpf_ktime_get_coarse_ns,
     macros::{map, xdp},
-    maps::{DevMapHash, HashMap},
+    maps::{Array, DevMapHash, HashMap},
     programs::XdpContext,
 };
 use network_types::{
@@ -24,7 +24,7 @@ use network_types::{
     udp::UdpHdr,
 };
 use traff_off_func_common::{
-    ConnectionTuple, ContainerInfo, Direction, FibMacs, FlowState, HostInfo, NATData, TIMEOUT_EST,
+    ConnectionTuple, ContainerInfo, Direction, FibMacs, FlowState, NATData, NICInfo, TIMEOUT_EST,
     TIMEOUT_NEW,
 };
 use traff_off_func_ebpf::{
@@ -45,11 +45,11 @@ static UDP_CONNTRACK: HashMap<ConnectionTuple, FlowState> = HashMap::with_max_en
 #[map(name = "EXPOSE_MAP")]
 static EXPOSE_MAP: HashMap<u16, ContainerInfo> = HashMap::with_max_entries(256, 0);
 
-#[map(name = "REV_EXPOSE_MAP")]
-static REV_EXPOSE_MAP: HashMap<u16, HostInfo> = HashMap::with_max_entries(256, 0);
+#[map(name = "PNIC_ARRAY")]
+static PNIC_ARRAY: Array<NICInfo> = Array::with_max_entries(1, 0);
 
 #[xdp(frags)]
-pub fn xdp_pass(_ctx: XdpContext) -> u32 {
+pub fn xdp_stub(_ctx: XdpContext) -> u32 {
     xdp_action::XDP_PASS
 }
 
@@ -215,11 +215,11 @@ fn process_udp_snat(
     let tot_len = u16::from_be_bytes(ipv4.tot_len);
     let container_mac = eth.src_addr;
 
-    let HostInfo {
-        host_ip,
-        host_ifindex,
+    let NICInfo {
+        nic_ip: pnic_ip,
+        nic_ifindex: pnic_ifindex,
         ..
-    } = match unsafe { REV_EXPOSE_MAP.get(0) } {
+    } = match PNIC_ARRAY.get(0) {
         Some(info) => *info,
         None => return Ok(None),
     };
@@ -228,11 +228,11 @@ fn process_udp_snat(
     // get src and dst MAC addrs for egress direction from the host NIC perspective
     let fib_macs = if let Some(fib_macs) = get_fib_macs(
         ctx,
-        u32::to_be(host_ip),
+        u32::to_be(pnic_ip),
         u32::to_be(dst_ip),
         IpProto::Udp,
         tot_len,
-        host_ifindex,
+        pnic_ifindex,
     ) {
         fib_macs
     } else {
@@ -240,13 +240,13 @@ fn process_udp_snat(
     };
 
     // <cont_ip, cont_port, cont_mac> => <host_ip, host_port, host_mac>
-    let snat = NATData::new(host_ip, host_port, fib_macs, 0);
+    let snat = NATData::new(pnic_ip, host_port, fib_macs, 0);
     let dnat_macs = FibMacs {
         fib_smac: fib_macs.fib_smac,
         fib_dmac: container_mac,
     };
 
-    let dkey = ConnectionTuple::new(dst_ip, host_ip, dst_port, host_port);
+    let dkey = ConnectionTuple::new(dst_ip, pnic_ip, dst_port, host_port);
     let dnat = NATData::new(src_ip, src_port, dnat_macs, src_ip);
 
     let time: u64 = unsafe { bpf_ktime_get_coarse_ns() };

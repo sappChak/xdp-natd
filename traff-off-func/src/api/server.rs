@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use crate::{
-    ContainersMap, ExposeMap, RevExposeMap,
+    ContainerMap, ExposeMap,
     api::{router::router, state::AppState},
     configuration::config::Configuration,
     port_allocator::PortAllocator,
@@ -10,13 +10,13 @@ use crate::{
 async fn start_server(configuration: &Configuration, app: axum::Router) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(format!(
         "{}:{}",
-        configuration.application.host, configuration.application.port
+        configuration.control_plane.host, configuration.control_plane.port
     ))
     .await
     .unwrap_or_else(|_| {
         eprintln!(
             "failed to bind to address: {}:{}",
-            configuration.application.host, configuration.application.port
+            configuration.control_plane.host, configuration.control_plane.port
         );
         std::process::exit(1);
     });
@@ -30,19 +30,11 @@ async fn start_server(configuration: &Configuration, app: axum::Router) -> Resul
 pub async fn setup_axum_server(
     configuration: &Configuration,
     expose_map: ExposeMap,
-    rev_expose_map: RevExposeMap,
     port_allocator: PortAllocator,
-    containers: ContainersMap,
-    nic_info: (u32, u32),
+    containers: ContainerMap,
 ) -> Result<()> {
-    let prefix = configuration.application.prefix.clone();
-    let state = AppState::new(
-        expose_map,
-        rev_expose_map,
-        port_allocator,
-        containers,
-        nic_info,
-    );
+    let prefix = configuration.control_plane.prefix.clone();
+    let state = AppState::new(expose_map, port_allocator, containers);
     let router = router(state, prefix);
     start_server(configuration, router).await?;
     Ok(())

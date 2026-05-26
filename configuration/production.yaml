@@ -1,10 +1,10 @@
-application:
+control_plane:
   host: "0.0.0.0"
   port: 8080
   prefix: "/api/v1/"
   logger_name: traff-off-func
   default_env_filter: info
-dataplane:
-  network: br-xdp 
+data_plane:
+  network: br-xdp
   mode: native
   pnic: enp9s0

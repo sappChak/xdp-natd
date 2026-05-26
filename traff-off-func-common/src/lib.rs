@@ -8,16 +8,16 @@ pub const TIMEOUT_EST: u64 = 180_000_000_000;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct HostInfo {
-    pub host_ip: u32,
-    pub host_ifindex: u32,
+pub struct NICInfo {
+    pub nic_ip: u32,
+    pub nic_ifindex: u32,
 }
 
-impl HostInfo {
-    pub fn new(host_ip: u32, host_ifindex: u32) -> Self {
+impl NICInfo {
+    pub fn new(nic_ip: u32, nic_ifindex: u32) -> Self {
         Self {
-            host_ip,
-            host_ifindex,
+            nic_ip,
+            nic_ifindex,
         }
     }
 }
@@ -105,7 +105,7 @@ impl FlowState {
 }
 
 #[cfg(feature = "user")]
-unsafe impl Pod for HostInfo {}
+unsafe impl Pod for NICInfo {}
 
 #[cfg(feature = "user")]
 unsafe impl Pod for ConnectionTuple {}

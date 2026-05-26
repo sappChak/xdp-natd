@@ -93,50 +93,37 @@ pub async fn expose_port(
         })?;
 
     let container_info = ContainerInfo {
-        container_ip: u32::from(container.ipv4),
+        container_ip: u32::from(container.ipv4_address),
         container_mac: container.mac_address,
         container_port: req.container_port,
         ifindex: container.ifindex,
     };
 
-    let host_port = lock
+    let allocated_port = lock
         .port_allocator
         .allocate_next()
         .ok_or_else(|| AppError::Capacity("No available host ports left".to_string()))?;
 
-    if lock
-        .rev_expose_map
-        .get(&container_info.container_port, 0)
-        .is_ok()
-    {
-        lock.port_allocator.deallocate(host_port);
-        return Err(AppError::Conflict(
-            "Container port is already exposed".to_string(),
-        ));
-    }
-
-    if let Err(e) = lock.expose_map.insert(host_port, container_info, 1) {
-        let _ = lock.rev_expose_map.remove(&container_info.container_port);
-        lock.port_allocator.deallocate(host_port);
+    if let Err(e) = lock.expose_map.insert(allocated_port, container_info, 1) {
+        lock.port_allocator.deallocate(allocated_port);
         return Err(anyhow!(
             "Failed to insert host port {} into expose_map: {}",
-            host_port,
+            allocated_port,
             e
         )
         .into());
     }
 
     if let Err(e) = add_iptables_rule(
-        host_port,
+        allocated_port,
         container_info.container_ip,
         container_info.container_port,
     ) {
-        let _ = lock.rev_expose_map.remove(&container_info.container_port);
-        let _ = lock.expose_map.remove(&host_port);
-        lock.port_allocator.deallocate(host_port);
+        let _ = lock.expose_map.remove(&allocated_port);
+        lock.port_allocator.deallocate(allocated_port);
         return Err(anyhow!(
             "Failed to expose tcp port {} via iptables: {}",
-            host_port,
+            allocated_port,
             e
         )
         .into());
@@ -146,12 +133,12 @@ pub async fn expose_port(
         "exposing container {}:{} on port: {}",
         Ipv4Addr::from_bits(container_info.container_ip),
         container_info.container_port,
-        host_port
+        allocated_port
     );
 
     let response_message = format!(
         "exposing container port {} on host port {}",
-        req.container_port, host_port
+        req.container_port, allocated_port
     );
 
     Ok((axum::http::StatusCode::OK, response_message).into_response())
@@ -218,7 +205,6 @@ pub async fn unexpose_port(
     }
 
     let _ = lock.expose_map.remove(&host_port);
-    let _ = lock.rev_expose_map.remove(&container_info.container_port);
 
     lock.port_allocator.deallocate(host_port);
 

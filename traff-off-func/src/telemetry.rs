@@ -31,8 +31,8 @@ fn init_subscriber(subscriber: impl Subscriber + Sync + Send) {
 
 pub fn init_logging(configuration: &Configuration) -> Result<()> {
     let subscriber = get_subscriber(
-        configuration.application.logger_name.clone(),
-        configuration.application.default_env_filter.clone(),
+        configuration.control_plane.logger_name.clone(),
+        configuration.control_plane.default_env_filter.clone(),
         std::io::stdout,
     );
     init_subscriber(subscriber);

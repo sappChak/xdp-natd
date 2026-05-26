@@ -1,27 +1,21 @@
-use crate::{ContainersMap, ExposeMap, RevExposeMap, port_allocator::PortAllocator};
+use crate::{ContainerMap, ExposeMap, port_allocator::PortAllocator};
 
 pub struct AppState {
     pub expose_map: ExposeMap,
-    pub rev_expose_map: RevExposeMap,
     pub port_allocator: PortAllocator,
-    pub container_metas: ContainersMap,
-    pub nic_info: (u32, u32),
+    pub container_metas: ContainerMap,
 }
 
 impl AppState {
     pub fn new(
         expose_map: ExposeMap,
-        rev_exposed_map: RevExposeMap,
         port_allocator: PortAllocator,
-        container_metas: ContainersMap,
-        nic_info: (u32, u32),
+        container_metas: ContainerMap,
     ) -> Self {
         Self {
             expose_map,
-            rev_expose_map: rev_exposed_map,
             port_allocator,
             container_metas,
-            nic_info,
         }
     }
 }

@@ -37,6 +37,7 @@ tracing-bunyan-formatter.workspace = true
 tracing-log.workspace = true
 tracing-subscriber.workspace = true
 thiserror.workspace = true
+
 [build-dependencies]
 anyhow = { workspace = true }
 aya-build = { workspace = true }
