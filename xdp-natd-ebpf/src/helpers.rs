@@ -6,7 +6,7 @@ use aya_ebpf::{
 };
 use aya_log_ebpf::debug;
 use network_types::ip::IpProto;
-use traff_off_func_common::{FibMacs, NATData};
+use xdp_natd_common::{FibMacs, NATData};
 
 use crate::AF_INET;
 

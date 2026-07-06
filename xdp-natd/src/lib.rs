@@ -1,4 +1,4 @@
-use traff_off_func_common::ContainerInfo;
+use xdp_natd_common::ContainerInfo;
 
 pub mod api;
 pub mod configuration;

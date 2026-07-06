@@ -36,11 +36,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/configuration /configuration
-COPY --from=builder /app/target/release/traff-off-func /usr/local/bin/traff-off-func
+COPY --from=builder /app/target/release/xdp-natd /usr/local/bin/xdp-natd
 
 ENV RUST_LOG=info
 ENV APP_ENVIRONMENT=local
 
-ENTRYPOINT ["/usr/local/bin/traff-off-func"]
+ENTRYPOINT ["/usr/local/bin/xdp-natd"]
 
-LABEL description="docker run -d --name traff-off-func --privileged --network host --pid host -v /var/run/docker.sock:/var/run/docker.sock -v /sys/fs/bpf:/sys/fs/bpf -v /lib/modules:/lib/modules:ro traff-off-func:latest"
+LABEL description="docker run -d --name xdp-natd --privileged --network host --pid host -v /var/run/docker.sock:/var/run/docker.sock -v /sys/fs/bpf:/sys/fs/bpf -v /lib/modules:/lib/modules:ro xdp-natd:latest"

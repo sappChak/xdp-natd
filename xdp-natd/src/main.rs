@@ -27,12 +27,12 @@ use tokio::{
     },
     time,
 };
-use traff_off_func::{
+use xdp_natd::{
     AyaHashMap, ContainerMap, ContainerMetadata, ExposeMap, PORT_RANGE,
     api::server::setup_axum_server, configuration::config::get_configuration,
     port_allocator::PortAllocator, telemetry::init_logging,
 };
-use traff_off_func_common::{ConnectionTuple, FlowState, NICInfo};
+use xdp_natd_common::{ConnectionTuple, FlowState, NICInfo};
 
 async fn get_containers(network: &str) -> Result<ContainerMap> {
     let mut container_metas = HashMap::new();
@@ -222,12 +222,12 @@ fn setup_devmap(ebpf: &mut Ebpf, containers: &HashMap<u32, ContainerMetadata>) -
 
 fn setup_pnic(ebpf: &mut Ebpf, nic_name: &str, mode: XdpFlags) -> Result<(u32, u32)> {
     debug!("setting up the pnic with name: {}", nic_name);
-    let ifindex = if_nametoindex(nic_name)?;
+    let nic_ifindex = if_nametoindex(nic_name)?;
     let nic_addr = get_if_addr(nic_name)?;
-    debug!("ifindex of the pnic is: {}", ifindex);
+    debug!("ifindex of the pnic is: {}", nic_ifindex);
 
     let mut devmap = DevMapHash::try_from(ebpf.map_mut("REDIRECT_MAP").unwrap())?;
-    devmap.insert(0, ifindex, None, 0)?;
+    devmap.insert(0, nic_ifindex, None, 0)?;
 
     let program: &mut Xdp = ebpf.program_mut("xdp_redirect_host").unwrap().try_into()?;
     program.load()?;
@@ -256,7 +256,7 @@ fn setup_pnic(ebpf: &mut Ebpf, nic_name: &str, mode: XdpFlags) -> Result<(u32, u
         }
     });
 
-    Ok((nic_addr, ifindex))
+    Ok((nic_addr, nic_ifindex))
 }
 
 fn attach_namespace_pass_programs(
@@ -312,7 +312,7 @@ async fn main() -> Result<()> {
 
     let mut ebpf = Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
-        "/traff-off-func"
+        "/xdp-natd"
     )))?;
 
     setup_ebpf_logging(&mut ebpf);
@@ -325,15 +325,15 @@ async fn main() -> Result<()> {
     setup_devmap(&mut ebpf, &containers)?;
 
     let protected_ebpf: Arc<Mutex<Ebpf>> = Arc::new(Mutex::new(Ebpf::load(
-        aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/traff-off-func")),
+        aya::include_bytes_aligned!(concat!(env!("OUT_DIR"), "/xdp-natd")),
     )?));
     attach_namespace_pass_programs(&protected_ebpf, &containers, mode)?;
 
     if let Some(ref nic) = configuration.data_plane.pnic {
-        let (nic_addr, nic_index) = setup_pnic(&mut ebpf, nic, mode)?;
+        let (nic_addr, nic_ifindex) = setup_pnic(&mut ebpf, nic, mode)?;
 
         let mut pnic_array = Array::try_from(ebpf.take_map("PNIC_ARRAY").unwrap())?;
-        let _ = pnic_array.set(0, NICInfo::new(nic_addr, nic_index), 0);
+        let _ = pnic_array.set(0, NICInfo::new(nic_addr, nic_ifindex), 0);
 
         let expose_map: ExposeMap = AyaHashMap::try_from(ebpf.take_map("EXPOSE_MAP").unwrap())?;
 

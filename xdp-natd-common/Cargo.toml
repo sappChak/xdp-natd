@@ -1,5 +1,5 @@
 [package]
-name = "traff-off-func-common"
+name = "xdp-natd-common"
 version = "0.1.0"
 edition.workspace = true
 

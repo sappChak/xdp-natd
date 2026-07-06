@@ -1,12 +1,12 @@
 [package]
-name = "traff-off-func"
+name = "xdp-natd"
 version = "0.1.0"
 edition.workspace = true
 
 license.workspace = true
 
 [dependencies]
-traff-off-func-common = { path = "../traff-off-func-common", features = ["user"] }
+xdp-natd-common = { path = "../xdp-natd-common", features = ["user"] }
 
 anyhow = { workspace = true, default-features = true }
 nix = { version = "0.31.2", features = ["net", "sched", "time"] }
@@ -54,8 +54,8 @@ cargo_metadata = { workspace = true }
 # Finally note that *any* usage of `artifact = ...` in *any* Cargo.toml in the workspace breaks
 # workflows with stable cargo; stable cargo outright refuses to load manifests that use unstable
 # features.
-traff-off-func-ebpf = { path = "../traff-off-func-ebpf" }
+xdp-natd-ebpf = { path = "../xdp-natd-ebpf" }
 
 [[bin]]
-name = "traff-off-func"
+name = "xdp-natd"
 path = "src/main.rs"

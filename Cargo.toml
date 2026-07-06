@@ -1,11 +1,11 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
-    "traff-off-func",
-    "traff-off-func-common",
-    "traff-off-func-ebpf",
+    "xdp-natd",
+    "xdp-natd-common",
+    "xdp-natd-ebpf",
 ]
-default-members = ["traff-off-func", "traff-off-func-common"]
+default-members = ["xdp-natd", "xdp-natd-common"]
 
 [workspace.package]
 license = "MIT OR Apache-2.0"
@@ -38,6 +38,6 @@ uuid = {version = "1", features = ["v4", "fast-rng", "macro-diagnostics"]}
 config = "0.15"
 thiserror = "2.0"
 
-[profile.release.package.traff-off-func-ebpf]
+[profile.release.package.xdp-natd-ebpf]
 debug = 2
 codegen-units = 1

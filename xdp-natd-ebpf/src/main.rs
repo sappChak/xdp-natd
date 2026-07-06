@@ -23,11 +23,11 @@ use network_types::{
     ip::{IpProto, Ipv4Hdr},
     udp::UdpHdr,
 };
-use traff_off_func_common::{
+use xdp_natd_common::{
     ConnectionTuple, ContainerInfo, Direction, FibMacs, FlowState, NATData, NICInfo, TIMEOUT_EST,
     TIMEOUT_NEW,
 };
-use traff_off_func_ebpf::{
+use xdp_natd_ebpf::{
     Flags,
     helpers::{apply_ip_dnat, apply_ip_snat, get_fib_macs, rewrite_macs},
 };

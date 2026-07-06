@@ -2345,57 +2345,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "traff-off-func"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "aya",
- "aya-build",
- "aya-log",
- "cargo_metadata",
- "clap",
- "config",
- "docker-api",
- "env_logger",
- "futures",
- "libc",
- "log",
- "macaddr",
- "nix",
- "serde",
- "serde-aux",
- "thiserror 2.0.18",
- "tokio",
- "tower-http",
- "tracing",
- "tracing-bunyan-formatter",
- "tracing-log 0.2.0",
- "tracing-subscriber",
- "traff-off-func-common",
- "traff-off-func-ebpf",
- "uuid",
-]
-
-[[package]]
-name = "traff-off-func-common"
-version = "0.1.0"
-dependencies = [
- "aya",
-]
-
-[[package]]
-name = "traff-off-func-ebpf"
-version = "0.1.0"
-dependencies = [
- "aya-ebpf",
- "aya-log-ebpf",
- "network-types",
- "traff-off-func-common",
- "which",
-]
-
-[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2956,6 +2905,57 @@ checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
 dependencies = [
  "libc",
  "rustix",
+]
+
+[[package]]
+name = "xdp-natd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "aya",
+ "aya-build",
+ "aya-log",
+ "cargo_metadata",
+ "clap",
+ "config",
+ "docker-api",
+ "env_logger",
+ "futures",
+ "libc",
+ "log",
+ "macaddr",
+ "nix",
+ "serde",
+ "serde-aux",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower-http",
+ "tracing",
+ "tracing-bunyan-formatter",
+ "tracing-log 0.2.0",
+ "tracing-subscriber",
+ "uuid",
+ "xdp-natd-common",
+ "xdp-natd-ebpf",
+]
+
+[[package]]
+name = "xdp-natd-common"
+version = "0.1.0"
+dependencies = [
+ "aya",
+]
+
+[[package]]
+name = "xdp-natd-ebpf"
+version = "0.1.0"
+dependencies = [
+ "aya-ebpf",
+ "aya-log-ebpf",
+ "network-types",
+ "which",
+ "xdp-natd-common",
 ]
 
 [[package]]

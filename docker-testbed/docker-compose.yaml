@@ -37,19 +37,19 @@ services:
       xdp-bridge:
         ipv4_address: 172.20.0.30
 
-  traff-off-func:
+  xdp-natd:
     build:
       context: ../
       dockerfile: Dockerfile
-    image: traff-off-func:latest
+    image: xdp-natd:latest
     profiles: ["offload"]
-    container_name: traff-off-func
+    container_name: xdp-natd
     privileged: true
     network_mode: "host"
     pid: "host"
     environment:
       - RUST_LOG=info
-      - APP_ENV=production
+      - APP_ENV=local
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /sys/fs/bpf:/sys/fs/bpf

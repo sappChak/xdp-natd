@@ -2,7 +2,7 @@ control_plane:
   host: "0.0.0.0"
   port: 8080
   prefix: "/api/v1/"
-  logger_name: traff-off-func
+  logger_name: xdp-natd
   default_env_filter: debug
 data_plane:
   network: xdp-test-net

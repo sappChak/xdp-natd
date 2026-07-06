@@ -1,4 +1,4 @@
-core-up@core-up-Standard-PC-Q35-ICH9-2009:~/traff-off-func/docker-testbed$ sockperf pp -i 192.168.6.10 -p 8089 -t 60
+core-up@core-up-Standard-PC-Q35-ICH9-2009:~/xdp-natd/docker-testbed$ sockperf pp -i 192.168.6.10 -p 8089 -t 60
 sockperf: == version #3.7-no.git ==
 sockperf[CLIENT] send on:sockperf: using recvfrom() to block on socket(s)
 

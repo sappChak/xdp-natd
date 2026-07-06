@@ -7,7 +7,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use traff_off_func_common::ContainerInfo;
+use xdp_natd_common::ContainerInfo;
 
 use crate::api::{AppError, SharedAppState};
 

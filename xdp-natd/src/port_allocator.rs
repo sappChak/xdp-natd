@@ -11,7 +11,7 @@ impl PortAllocator {
     }
 
     pub fn allocate_next(&mut self) -> Option<u16> {
-        self.ports.pop_back()
+        self.ports.pop_front()
     }
 
     pub fn deallocate(&mut self, port: u16) {
